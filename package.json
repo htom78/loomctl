@@ -11,14 +11,20 @@
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
+    "staging:up": "docker compose -f deploy/staging/compose.yml up -d --build",
+    "staging:smoke": "node scripts/staging-two-instance.mjs",
+    "staging:down": "docker compose -f deploy/staging/compose.yml down",
     "start": "node dist/index.js"
   },
   "dependencies": {
     "commander": "^12.1.0",
-    "execa": "^9.5.1"
+    "execa": "^9.5.1",
+    "pg": "^8.22.0",
+    "redis": "^6.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
+    "@types/pg": "^8.20.0",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }

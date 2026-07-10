@@ -6,6 +6,7 @@ import type { EvaluationResult, HarnessEvent, HarnessStatus, ReviewerResult, Run
 import { createLocalExecutor, type WorkspaceExecutor } from "./executor.js";
 import { createRunStore, readRunEvents } from "./run-store.js";
 import { createToolRuntime, effectiveAllowedTools, runVerification } from "./tools.js";
+import type { PlatformStateBackend } from "./storage/contracts.js";
 
 export interface RunHarnessOptions {
   goal: string;
@@ -30,6 +31,7 @@ export interface RunHarnessOptions {
   control?: RunControl;
   resume?: boolean;
   startedAt?: string;
+  stateBackend?: PlatformStateBackend;
 }
 
 export interface RunRequester {
@@ -57,7 +59,13 @@ export async function runHarness(options: RunHarnessOptions): Promise<RunHarness
   const runId = options.runId ?? makeRunId();
   const runRoot = options.runRoot ?? join(options.cwd, ".loom", "runs");
   const startedAt = options.startedAt ?? new Date().toISOString();
-  const store = await createRunStore({ rootDir: runRoot, runId, goal: options.goal });
+  const store = await createRunStore({
+    rootDir: runRoot,
+    runId,
+    goal: options.goal,
+    eventStore: options.stateBackend?.events,
+    documentStore: options.stateBackend?.documents,
+  });
   const executor = options.executor ?? createLocalExecutor({ cwd: options.cwd });
   const allowedTools = effectiveAllowedTools(options.allowedTools);
   const runExecutionEnv = {
@@ -84,7 +92,7 @@ export async function runHarness(options: RunHarnessOptions): Promise<RunHarness
   let currentIteration: number | undefined;
 
   if (options.resume) {
-    events.push(...await readRunEvents(store.runDir));
+    events.push(...await readRunEvents(store.runDir, options.stateBackend?.events));
     const resumeRequester = options.resumeRequester ?? options.requester;
     events.push(await store.append("resume", compactObject({
       actor: resumeRequester?.actor,
@@ -114,7 +122,7 @@ export async function runHarness(options: RunHarnessOptions): Promise<RunHarness
       currentIteration = iteration;
       currentPhase = "agent_next";
       throwIfAborted(options.signal);
-      events.splice(0, events.length, ...(await readRunEvents(store.runDir)));
+      events.splice(0, events.length, ...(await readRunEvents(store.runDir, options.stateBackend?.events)));
       const pauseRequest = await options.control?.shouldPause?.(events);
       if (pauseRequest) {
         currentPhase = "paused";
@@ -309,7 +317,7 @@ async function writeAndReturnSummary(
   store: Awaited<ReturnType<typeof createRunStore>>,
   summary: RunSummary,
 ): Promise<RunHarnessResult> {
-  const events = await readRunEvents(store.runDir);
+  const events = await readRunEvents(store.runDir, store.eventStore);
   const requester = summary.requester ?? requesterSummaryFromEvents(events);
   const modelUsage = summary.modelUsage ?? modelUsageSummaryFromEvents(events);
   const observed = compactObject({ ...summary, requester, modelUsage });

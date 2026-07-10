@@ -1,0 +1,9 @@
+.git
+.github
+.loom
+cutover-bundle
+dist
+node_modules
+reports
+tests
+*.zip

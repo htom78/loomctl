@@ -96,6 +96,21 @@ Serve the harness over HTTP:
 loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
 ```
 
+For two or more server instances, use PostgreSQL for durable metadata/audit and
+Redis for leases, capacity, and queued-run claims:
+
+```bash
+LOOM_POSTGRES_URL='postgres://loom:secret@postgres/loom' \
+LOOM_REDIS_URL='redis://redis:6379' \
+loom harness serve --workspace-root /data/workspaces \
+  --state-backend postgres-redis
+```
+
+The default `file` backend remains suitable for local development. See
+[`docs/distributed-runtime.md`](docs/distributed-runtime.md) for ownership and
+failure semantics, or run the repeatable two-instance proof with
+`npm run staging:up`, `npm run staging:smoke`, and `npm run staging:down`.
+
 The default local executor is for loopback, single-user development. For shared or externally reachable HTTP service, choose Docker or Coder; `loom harness serve` rejects authenticated, non-loopback, or shell-enabled local executor use unless you explicitly pass `--allow-unsafe-local-executor`. Tenant auth includes CLI keys/tokens and existing policy-backed `apiKeys` on disk.
 
 For the MVP online sandbox, start an isolated executor with `--profile online-sandbox`; it expands the server allowlist to `file.read`, `file.write`, `git.diff`, `git.commit`, `verify.run`, and `shell.exec`, reports that profile and server allowlist through `GET /status`, exposes each tenant's effective allowlist plus non-sensitive `readiness`, `readiness.goldenPath`, and `visionLock` through `GET /tenants/:tenant/status`, and keeps the local executor safety guard. Its readiness is stricter than the safety guard: `GET /status` and tenant status only report `readiness.ok: true` and `readiness.goldenPath.ok: true` when role-based tenant keys cover `admin`, `developer`, and `viewer`, and execution is Docker with `--executor-home-root` or Coder, so online sandboxes have authenticated tenants, isolated execution, and per-tenant persistent home state. Tenant status scopes tenant/project-enumerating readiness checks, including model-key coverage, tenant auth roles, control-plane agent identity, AGS discovery using that tenant's control-plane token when configured, and AGS project-agent receipts/secrets, to the requested tenant; global status remains the cross-tenant operator view and, when no global AGS admin token is configured, aggregates tenant-scoped AGS discovery evidence with token-free `tokenMode`, tenant counts, and missing tenant lists. For the full Coder/control-plane/LiteLLM/brain path, use `--profile platform-readiness`; it keeps the same sandbox allowlist contract, requires model routing with a base URL plus either a server-wide or tenant-scoped API key, requires signed issue-comment webhook configuration alongside issue comment sync, requires control-plane issue URL configuration for evidence links, requires workspace Git transport/PR handoff via `git.pr` plus a workspace PR reporter, exposes provider-derived `controlPlaneGitTransport.sampleRemoteUrl` evidence, requires workspace branch lease readiness for run-scoped worktrees and run-suffixed PR branch derivation, requires tenant-scoped control-plane agent identity such as `--tenant-control-plane-token-env`, exposes machine-readable `readiness`, `readiness.goldenPath`, `server.runCreateIdempotency`, `server.concurrencyAdmission`, and `visionLock` checklists in `GET /status`, and makes smoke run the external readiness checks too.

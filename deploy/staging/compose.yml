@@ -1,0 +1,91 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: loom
+      POSTGRES_USER: loom
+      POSTGRES_PASSWORD: loom-staging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loom -d loom"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - redis-data:/data
+
+  harness-a:
+    build:
+      context: ../..
+    command: &harness-command
+      - harness
+      - serve
+      - --workspace-root
+      - /data/workspaces
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8787"
+      - --state-backend
+      - postgres-redis
+      - --state-postgres-schema
+      - loom_staging_v2
+      - --state-redis-prefix
+      - loom-staging
+      - --allow-shell
+      - --allow-unsafe-local-executor
+      - --max-tenant-active-runs
+      - "1"
+      - --run-lease-ttl-ms
+      - "5000"
+      - --tenant-key-env
+      - alice=LOOM_STAGING_ALICE_ADMIN_TOKEN:alice-admin:admin
+      - --tenant-key-env
+      - alice=LOOM_STAGING_ALICE_VIEWER_TOKEN:alice-viewer:viewer
+      - --tenant-key-env
+      - bob=LOOM_STAGING_BOB_ADMIN_TOKEN:bob-admin:admin
+    environment: &harness-environment
+      LOOM_POSTGRES_URL: postgres://loom:loom-staging@postgres:5432/loom
+      LOOM_REDIS_URL: redis://redis:6379
+      LOOM_STAGING_ALICE_ADMIN_TOKEN: ${LOOM_STAGING_ALICE_ADMIN_TOKEN:-local-alice-admin}
+      LOOM_STAGING_ALICE_VIEWER_TOKEN: ${LOOM_STAGING_ALICE_VIEWER_TOKEN:-local-alice-viewer}
+      LOOM_STAGING_BOB_ADMIN_TOKEN: ${LOOM_STAGING_BOB_ADMIN_TOKEN:-local-bob-admin}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8787:8787"
+    volumes:
+      - workspaces:/data/workspaces
+
+  harness-b:
+    build:
+      context: ../..
+    command: *harness-command
+    environment: *harness-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8788:8787"
+    volumes:
+      - workspaces:/data/workspaces
+
+volumes:
+  postgres-data:
+  redis-data:
+  workspaces:

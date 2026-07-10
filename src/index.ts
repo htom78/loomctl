@@ -94,6 +94,7 @@ import {
 import { projectTemplateDefaultSkills, type ProjectTemplateName } from "./harness/project-templates.js";
 import { appendRunEvent } from "./harness/run-store.js";
 import { createHarnessHttpServer, type ControlPlaneAgentIdentityConfig, type ControlPlaneProviderName, type HarnessWorkspaceContext, type IssueCommentReaderContext, type OperatorCockpitQueueBackendName, type TenantApiKey, type WorkspacePullRequestRequest } from "./harness/server.js";
+import { createStateBackendFromCliOptions, parseStateBackendFlag, stateBackendFlagIssues } from "./cli/state-backend.js";
 import { assertTenantName } from "./tenant.js";
 
 const cfg = loadConfig();
@@ -599,6 +600,11 @@ harness
   .option("--operator-cockpit-queue-backend <backend>", "operator cockpit queue backend: filesystem|agent-git-service", "filesystem")
   .option("--operator-cockpit-queue-ags-repo <owner/repo>", "agent-git-service repo for the operator cockpit queue store")
   .option("--operator-cockpit-queue-ags-path <path>", "agent-git-service contents path for the operator cockpit queue store")
+  .option("--state-backend <backend>", "durable state backend: file|postgres-redis", "file")
+  .option("--state-postgres-url-env <name>", "env var containing the PostgreSQL connection URL", "LOOM_POSTGRES_URL")
+  .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
+  .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
+  .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
   .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
   .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
   .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
@@ -681,6 +687,11 @@ harness
   .option("--operator-cockpit-queue-backend <backend>", "operator cockpit queue backend: filesystem|agent-git-service", "filesystem")
   .option("--operator-cockpit-queue-ags-repo <owner/repo>", "agent-git-service repo for the operator cockpit queue store")
   .option("--operator-cockpit-queue-ags-path <path>", "agent-git-service contents path for the operator cockpit queue store")
+  .option("--state-backend <backend>", "durable state backend: file|postgres-redis", "file")
+  .option("--state-postgres-url-env <name>", "env var containing the PostgreSQL connection URL", "LOOM_POSTGRES_URL")
+  .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
+  .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
+  .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
   .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
   .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
   .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
@@ -1747,6 +1758,11 @@ harness
   .option("--operator-cockpit-queue-backend <backend>", "operator cockpit queue backend: filesystem|agent-git-service", "filesystem")
   .option("--operator-cockpit-queue-ags-repo <owner/repo>", "agent-git-service repo for the operator cockpit queue store")
   .option("--operator-cockpit-queue-ags-path <path>", "agent-git-service contents path for the operator cockpit queue store")
+  .option("--state-backend <backend>", "durable state backend: file|postgres-redis", "file")
+  .option("--state-postgres-url-env <name>", "env var containing the PostgreSQL connection URL", "LOOM_POSTGRES_URL")
+  .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
+  .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
+  .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
   .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
   .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
   .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
@@ -1816,6 +1832,11 @@ harness
   .option("--operator-cockpit-queue-backend <backend>", "operator cockpit queue backend: filesystem|agent-git-service", "filesystem")
   .option("--operator-cockpit-queue-ags-repo <owner/repo>", "agent-git-service repo for the operator cockpit queue store")
   .option("--operator-cockpit-queue-ags-path <path>", "agent-git-service contents path for the operator cockpit queue store")
+  .option("--state-backend <backend>", "durable state backend: file|postgres-redis", "file")
+  .option("--state-postgres-url-env <name>", "env var containing the PostgreSQL connection URL", "LOOM_POSTGRES_URL")
+  .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
+  .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
+  .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
   .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
   .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
   .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
@@ -1869,15 +1890,17 @@ harness
     const executorHomeRoot = executorHomeRootFromOptions(serveOptions);
     const operatorBundleDir = operatorBundleDirFromServeOptions(serveOptions);
     const operatorCockpitQueueBackend = parseOperatorCockpitQueueBackendFlag(serveOptions.operatorCockpitQueueBackend, "--operator-cockpit-queue-backend");
-
     requireSafeServeExecutor(serveOptions);
-    const createExecutor = executorFactoryFromOptions(serveOptions);
-    const issueReporterOptions = {
-      ...serveOptions,
-      controlPlaneProvider,
-      tenantGiteaTokenEnvs: parseTenantGiteaTokenEnvs(serveOptions.tenantGiteaTokenEnv ?? []),
-    };
-    const server = createHarnessHttpServer({
+    const stateBackend = await createStateBackendFromCliOptions(serveOptions);
+
+    try {
+      const createExecutor = executorFactoryFromOptions(serveOptions);
+      const issueReporterOptions = {
+        ...serveOptions,
+        controlPlaneProvider,
+        tenantGiteaTokenEnvs: parseTenantGiteaTokenEnvs(serveOptions.tenantGiteaTokenEnv ?? []),
+      };
+      const server = createHarnessHttpServer({
       workspaceRoot: serveOptions.workspaceRoot,
       profile: serveOptions.profile,
       controlPlaneProvider,
@@ -1924,11 +1947,15 @@ harness
       workspaceSessionIdleTimeoutMs,
       runLeaseTtlMs,
       autoAbandonStaleRuns: serveOptions.autoAbandonStaleRuns,
-    });
-    await new Promise<void>((resolve) => server.listen(port, serveOptions.host, resolve));
-    const address = server.address();
-    const actualPort = typeof address === "object" && address ? address.port : port;
-    console.log(
+      stateBackend,
+      });
+      server.once("close", () => {
+        void stateBackend?.close().catch(() => undefined);
+      });
+      await new Promise<void>((resolve) => server.listen(port, serveOptions.host, resolve));
+      const address = server.address();
+      const actualPort = typeof address === "object" && address ? address.port : port;
+      console.log(
       JSON.stringify(
         {
           url: `http://${serveOptions.host}:${actualPort}`,
@@ -2039,7 +2066,11 @@ harness
         null,
         2,
       ),
-    );
+      );
+    } catch (error) {
+      await stateBackend?.close().catch(() => undefined);
+      throw error;
+    }
   });
 
 program.parseAsync();
@@ -2081,6 +2112,11 @@ interface HarnessServeCliOptions {
   operatorCockpitQueueBackend?: string;
   operatorCockpitQueueAgsRepo?: string;
   operatorCockpitQueueAgsPath?: string;
+  stateBackend?: string;
+  statePostgresUrlEnv?: string;
+  statePostgresSchema?: string;
+  stateRedisUrlEnv?: string;
+  stateRedisPrefix?: string;
   controlPlaneProvider: string;
   controlPlanePr?: boolean;
   controlPlaneMerge?: boolean;
@@ -2507,6 +2543,13 @@ interface HarnessPlatformCutoverExternalEnvironment {
       tenantTokenEnvNames: { tenant: string; envName: string }[];
       webhookSecretEnv?: string;
       agentGitServiceTokenSecretRoot?: string;
+    };
+    stateBackend: {
+      kind: "file" | "postgres-redis";
+      postgresUrlEnv?: string;
+      postgresSchema?: string;
+      redisUrlEnv?: string;
+      redisPrefix?: string;
     };
     agentGitServiceStaging?: {
       issue: string;
@@ -7122,6 +7165,13 @@ function platformCutoverExternalEnvironment(
   },
 ): HarnessPlatformCutoverExternalEnvironment {
   const provider = parseControlPlaneProviderFlag(options.controlPlaneProvider, "--control-plane-provider");
+  const stateBackend = parseStateBackendFlag(options.stateBackend);
+  const statePostgresUrlEnv = stateBackend === "postgres-redis"
+    ? parseEnvNameFlag(options.statePostgresUrlEnv ?? "LOOM_POSTGRES_URL", "--state-postgres-url-env")
+    : undefined;
+  const stateRedisUrlEnv = stateBackend === "postgres-redis"
+    ? parseEnvNameFlag(options.stateRedisUrlEnv ?? "LOOM_REDIS_URL", "--state-redis-url-env")
+    : undefined;
   const requiredVariables = new Map<string, HarnessPlatformCutoverEnvironmentVariable>();
   const tenant = context.tenant;
   const isolationTenant = context.isolationTenant === undefined
@@ -7145,6 +7195,14 @@ function platformCutoverExternalEnvironment(
   addPlatformCutoverRequiredEnv(requiredVariables, options.modelKeyEnv, ["platform-preflight", "serve", "smoke"], {
     sourceFlag: "--model-key-env",
     purpose: "OpenAI-compatible model gateway API key",
+  });
+  addPlatformCutoverRequiredEnv(requiredVariables, statePostgresUrlEnv, ["platform-preflight", "serve"], {
+    sourceFlag: "--state-postgres-url-env",
+    purpose: "PostgreSQL durable state connection URL",
+  });
+  addPlatformCutoverRequiredEnv(requiredVariables, stateRedisUrlEnv, ["platform-preflight", "serve"], {
+    sourceFlag: "--state-redis-url-env",
+    purpose: "Redis coordination connection URL",
   });
   addPlatformCutoverRequiredEnv(requiredVariables, context.tokenEnv, ["cutover-report", "smoke"], {
     sourceFlag: "--token-env",
@@ -7245,6 +7303,13 @@ function platformCutoverExternalEnvironment(
         tenantTokenEnvNames: tenantControlPlaneTokenEnvNames.map(({ tenant, envName }) => ({ tenant, envName })),
         webhookSecretEnv: controlPlaneWebhookSecretEnv,
         agentGitServiceTokenSecretRoot: provider === "agent-git-service" ? options.agentGitServiceTokenSecretRoot : undefined,
+      }),
+      stateBackend: compactObject({
+        kind: stateBackend,
+        postgresUrlEnv: statePostgresUrlEnv,
+        postgresSchema: stateBackend === "postgres-redis" ? options.statePostgresSchema ?? "loom" : undefined,
+        redisUrlEnv: stateRedisUrlEnv,
+        redisPrefix: stateBackend === "postgres-redis" ? options.stateRedisPrefix ?? "loom" : undefined,
       }),
       ...(context.agentGitServiceStaging ? { agentGitServiceStaging: context.agentGitServiceStaging } : {}),
       tenants: compactObject({
@@ -7367,6 +7432,13 @@ function appendServeShapeCommandArgs(args: string[], options: HarnessServeCliOpt
   appendCommandArg(args, "--operator-cockpit-queue-backend", options.operatorCockpitQueueBackend);
   appendCommandArg(args, "--operator-cockpit-queue-ags-repo", options.operatorCockpitQueueAgsRepo);
   appendCommandArg(args, "--operator-cockpit-queue-ags-path", options.operatorCockpitQueueAgsPath);
+  if (parseStateBackendFlag(options.stateBackend) === "postgres-redis") {
+    appendCommandArg(args, "--state-backend", "postgres-redis");
+    appendCommandArg(args, "--state-postgres-url-env", options.statePostgresUrlEnv ?? "LOOM_POSTGRES_URL");
+    appendCommandArg(args, "--state-postgres-schema", options.statePostgresSchema ?? "loom");
+    appendCommandArg(args, "--state-redis-url-env", options.stateRedisUrlEnv ?? "LOOM_REDIS_URL");
+    appendCommandArg(args, "--state-redis-prefix", options.stateRedisPrefix ?? "loom");
+  }
   appendCommandArg(args, "--control-plane-provider", options.controlPlaneProvider);
   appendBooleanCommandArg(args, "--control-plane-pr", options.controlPlanePr);
   appendBooleanCommandArg(args, "--control-plane-merge", options.controlPlaneMerge);
@@ -13265,6 +13337,11 @@ function platformPreflightServeOptions(options: HarnessPlatformPreflightCliOptio
     operatorCockpitQueueBackend: options.operatorCockpitQueueBackend,
     operatorCockpitQueueAgsRepo: options.operatorCockpitQueueAgsRepo,
     operatorCockpitQueueAgsPath: options.operatorCockpitQueueAgsPath,
+    stateBackend: options.stateBackend,
+    statePostgresUrlEnv: options.statePostgresUrlEnv,
+    statePostgresSchema: options.statePostgresSchema,
+    stateRedisUrlEnv: options.stateRedisUrlEnv,
+    stateRedisPrefix: options.stateRedisPrefix,
     controlPlaneProvider: options.controlPlaneProvider ?? "gitea-forgejo",
     controlPlanePr: Boolean(options.controlPlanePr),
     controlPlaneMerge: Boolean(options.controlPlaneMerge),
@@ -13455,6 +13532,7 @@ function runHarnessDoctor(options: HarnessServeCliOptions): HarnessDoctorResult 
     serveOptions.agentGitServiceTokenSecretRoot,
   );
   const operatorBundleDir = operatorBundleDirFromServeOptions(serveOptions);
+  const stateBackend = stateBackendDoctorCheck(serveOptions);
   const localExecutorSafetyReasons = unsafeLocalExecutorReasons(serveOptions, policyKeyCount > 0);
   const checks: Record<string, HarnessDoctorCheck> = {
     serveFlagValidation: serveFlagValidationDoctorCheck(serveOptions),
@@ -13464,6 +13542,7 @@ function runHarnessDoctor(options: HarnessServeCliOptions): HarnessDoctorResult 
       bundleDir: operatorBundleDir,
       source: serveOptions.operatorBundleDir?.trim() ? "flag" : "default",
     },
+    stateBackend,
     controlPlaneEnvValidation,
     executorConfiguration: executorConfigurationDoctorCheck(serveOptions),
     localExecutorSafety: compactDoctorCheck({
@@ -13604,6 +13683,38 @@ function runHarnessDoctor(options: HarnessServeCliOptions): HarnessDoctorResult 
     missing,
     checks,
     recommendedFlags: recommendedDoctorFlags(missing),
+  };
+}
+
+function stateBackendDoctorCheck(options: HarnessServeCliOptions): HarnessDoctorCheck {
+  const invalidFlags = stateBackendFlagIssues(options);
+  if (invalidFlags.length) {
+    return {
+      required: true,
+      ok: false,
+      kind: options.stateBackend ?? "file",
+      invalidFlags,
+    };
+  }
+  const kind = parseStateBackendFlag(options.stateBackend);
+  if (kind === "file") {
+    return { required: true, ok: true, kind, distributed: false };
+  }
+  const postgresUrlEnv = options.statePostgresUrlEnv ?? "LOOM_POSTGRES_URL";
+  const redisUrlEnv = options.stateRedisUrlEnv ?? "LOOM_REDIS_URL";
+  const missingEnvNames = [postgresUrlEnv, redisUrlEnv].filter((name) => !process.env[name]);
+  return {
+    required: true,
+    ok: missingEnvNames.length === 0,
+    kind,
+    distributed: true,
+    postgresUrlEnv,
+    postgresUrlSet: Boolean(process.env[postgresUrlEnv]),
+    postgresSchema: options.statePostgresSchema ?? "loom",
+    redisUrlEnv,
+    redisUrlSet: Boolean(process.env[redisUrlEnv]),
+    redisPrefix: options.stateRedisPrefix ?? "loom",
+    missingEnvNames,
   };
 }
 
@@ -14063,6 +14174,7 @@ function recommendedDoctorFlags(missing: string[]): string[] {
     localExecutorSafety: ["--executor docker|coder", "--allow-unsafe-local-executor"],
     executorConfiguration: ["--executor-image <image>", "--executor-workspace <name>", "--executor local|docker|coder"],
     controlPlaneEnvValidation: ["--control-plane-token-env <env>", "--tenant-control-plane-token-env <tenant=env>", "--control-plane-webhook-secret-env <env>"],
+    stateBackend: ["--state-postgres-url-env <env>", "--state-redis-url-env <env>"],
   };
   return Array.from(new Set(missing.flatMap((name) => flags[name] ?? [])));
 }
@@ -21030,6 +21142,7 @@ function serveFlagValidationIssues(options: HarnessServeCliOptions): ServeFlagVa
     operatorCockpitQueueBackendFlagIssue(options.operatorCockpitQueueBackend, "--operator-cockpit-queue-backend"),
     operatorCockpitQueueAgentGitServiceRepoFlagIssue(options.operatorCockpitQueueAgsRepo),
     operatorCockpitQueueAgentGitServicePathFlagIssue(options.operatorCockpitQueueAgsPath),
+    ...stateBackendFlagIssues(options),
   ];
   if (options.executor === "docker" || options.executor === "coder") {
     issues.push(

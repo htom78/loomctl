@@ -1,8 +1,8 @@
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, type Dirent } from "node:fs";
 import { appendFile, chmod, mkdir, open, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { dirname, join, posix, relative, resolve } from "node:path";
+import { basename, dirname, join, posix, relative, resolve } from "node:path";
 
 import {
   createAgentWithSetupSteps,
@@ -26,6 +26,22 @@ import { WORKBENCH_HTML } from "./workbench.js";
 import { makeRunId, runHarness, type RunPauseRequest, type RunRequester } from "./loop.js";
 import { createOpenAiCompatibleAgent, type ModelAgentProtocol } from "./model-agent.js";
 import { appendRunEvent, readRunEvents } from "./run-store.js";
+import { dispatchHarnessServerRoutes, type HarnessServerRouteCandidate } from "./server-routes.js";
+import {
+  readQueuedRunSnapshot as loadQueuedRunSnapshot,
+  readRunState as loadRunState,
+  readRunStateIfPresent as loadRunStateIfPresent,
+  listStoredRunStates,
+  writeQueuedRunSnapshot as persistQueuedRunSnapshot,
+  writeRunStatus as persistRunStatus,
+  writeRunSummary as persistRunSummary,
+  type QueuedRunBlockedReason,
+  type QueuedRunConcurrencySummary,
+  type QueuedRunSnapshot,
+  type QueuedRunStatus,
+  type ReadableRunState,
+  type RunningRunStatus,
+} from "./run-state.js";
 import type { DeploymentGate, HarnessEvent, ProjectContractEvidence, ProjectContractPatch, ProjectContractStatusEvidence, ProjectRunPolicyEvidence, ReviewClaim, ReviewGate, RunMetadata, RunModelUsageSummary, RunRequesterSummary, RunSummary } from "./events.js";
 import { CONTROL_PLANE_PROVIDER_BOUNDARY, controlPlaneProviderCatalogEntry, type ControlPlaneProvider, type ControlPlaneProviderAdoptionStage, type ControlPlaneProviderBoundary, type ControlPlaneProviderCatalogName } from "./control-plane.js";
 import { controlPlaneProviderAdapter as resolveControlPlaneProviderAdapter } from "./control-plane-registry.js";
@@ -77,6 +93,7 @@ import {
   type WorkspaceSession,
 } from "./executor.js";
 import { assertTenantName } from "../tenant.js";
+import { StateConflictError, type PlatformStateBackend } from "./storage/contracts.js";
 
 export interface HarnessServerOptions {
   workspaceRoot: string;
@@ -128,6 +145,8 @@ export interface HarnessServerOptions {
   agentGitServiceReadWikiMemory?: typeof readAgentGitServiceWikiMemory;
   agentGitServiceUpdateWikiMemory?: typeof updateAgentGitServiceWikiMemory;
   agentGitServiceTokenSecretRoot?: string;
+  stateBackend?: PlatformStateBackend;
+  instanceId?: string;
 }
 
 export interface PullRequestReporterResult {
@@ -1234,42 +1253,6 @@ interface InitialRunEvent {
   data: Record<string, unknown>;
 }
 
-interface RunningRunStatus {
-  runId: string;
-  tenant: string;
-  project: string;
-  goal: string;
-  status: "running";
-  skills: string[];
-  metadata?: RunMetadata;
-  requester?: RunRequesterSummary;
-  startedAt: string;
-  heartbeatAt?: string;
-  leaseExpiresAt?: string;
-  runDir: string;
-}
-
-interface QueuedRunStatus {
-  runId: string;
-  tenant: string;
-  project: string;
-  goal: string;
-  status: "queued";
-  skills: string[];
-  metadata?: RunMetadata;
-  requester?: RunRequesterSummary;
-  queuedAt: string;
-  tenantQueuePosition?: number;
-  projectQueuePosition?: number;
-  blockedReason?: QueuedRunBlockedReason;
-  blockedByRunIds?: string[];
-  limit?: number;
-  concurrency?: QueuedRunConcurrencySummary;
-  runDir: string;
-}
-
-type ReadableRunState = RunSummary | RunningRunStatus | QueuedRunStatus;
-
 interface HarnessRunStart {
   tenant: string;
   project: string;
@@ -1304,10 +1287,11 @@ interface QueuedRun extends HarnessRunStart {
   access?: TenantAccess;
 }
 
-interface QueuedRunSnapshot {
-  schemaVersion: 1;
-  request: RunRequestBody;
-  requester?: RunRequester;
+type HarnessQueuedRunSnapshot = QueuedRunSnapshot<RunRequestBody, RunRequester>;
+
+interface DistributedQueuedRunEnvelope {
+  status: QueuedRunStatus;
+  snapshot: HarnessQueuedRunSnapshot;
 }
 
 interface RunCreateRequestRecord {
@@ -1506,6 +1490,7 @@ interface HarnessServerStatus {
     runWorkspaceIsolation: RunWorkspaceIsolation;
     runCreateIdempotency: RunCreateIdempotencyStatus;
     concurrencyAdmission: HarnessConcurrencyAdmissionStatus;
+    stateBackend: HarnessStateBackendStatus;
   };
   readiness: HarnessProfileReadiness;
   limits: {
@@ -1698,6 +1683,7 @@ interface TenantHarnessServerStatus {
     runWorkspaceIsolation: RunWorkspaceIsolation;
     runCreateIdempotency: RunCreateIdempotencyStatus;
     concurrencyAdmission: HarnessConcurrencyAdmissionStatus;
+    stateBackend: HarnessStateBackendStatus;
   };
   readiness: HarnessProfileReadiness;
   visionLock: HarnessVisionLock;
@@ -1716,24 +1702,19 @@ interface TenantHarnessServerStatus {
   };
 }
 
+interface HarnessStateBackendStatus {
+  kind: string;
+  metadata: "filesystem" | "postgresql";
+  coordination: "filesystem" | "redis";
+  distributed: boolean;
+}
+
 interface TenantResourceStatus {
   tenant: string;
   activeRuns: number;
   queuedRuns: number;
   activeWorkspaceSessions: number;
   activeWorkspaceSessionDetails?: WorkspaceSessionSummary[];
-}
-
-type QueuedRunBlockedReason = "tenant_active_run_limit" | "project_active_workspace" | "persisted_running_run" | "ready";
-
-interface QueuedRunConcurrencySummary {
-  state: "blocked" | "ready";
-  blockedReason: QueuedRunBlockedReason;
-  blockedByRunIds?: string[];
-  activeTenantRunCount?: number;
-  tenantActiveRunLimit?: number;
-  projectActiveRunId?: string;
-  persistedRunId?: string;
 }
 
 interface QueuedRunAdmission {
@@ -2733,10 +2714,12 @@ const HARNESS_VISION_LOCK: HarnessVisionLock = {
   capabilities: [...SHARED_HARNESS_VISION_LOCK.capabilities],
 };
 const RUN_PRESENCE_TTL_MS = 45_000;
-const QUEUED_RUN_REQUEST_FILE = "queued-request.json";
 const RUN_PAUSE_REQUEST_FILE = "pause-request.json";
 const RUN_CANCEL_REQUEST_FILE = "cancel-request.json";
 const RUN_CONTROL_POLL_INTERVAL_MS = 250;
+const DISTRIBUTED_RUN_QUEUE = "harness-runs";
+const DISTRIBUTED_RUN_QUEUE_CLAIM_TTL_MS = 120_000;
+const DISTRIBUTED_RUN_QUEUE_POLL_MS = 250;
 const RUN_CREATE_REQUEST_REPLAY_TIMEOUT_MS = 30_000;
 const RUN_CREATE_REQUEST_REPLAY_POLL_MS = 10;
 const RUN_ADMISSION_DIR = ".admission";
@@ -2788,21 +2771,21 @@ function tenantActiveRunLimit(options: HarnessServerOptions): number | undefined
 }
 
 async function effectiveTenantWorkspaceSessionLimit(options: HarnessServerOptions, tenant: string): Promise<number> {
-  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant);
+  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant, options);
   return policy?.limits?.maxWorkspaceSessions ?? tenantWorkspaceSessionLimit(options);
 }
 
 async function effectiveTenantWorkspaceByteLimit(options: HarnessServerOptions, tenant: string): Promise<number | undefined> {
-  return (await readTenantPolicy(resolve(options.workspaceRoot), tenant))?.limits?.maxWorkspaceBytes;
+  return (await readTenantPolicy(resolve(options.workspaceRoot), tenant, options))?.limits?.maxWorkspaceBytes;
 }
 
 async function effectiveTenantActiveRunLimit(options: HarnessServerOptions, tenant: string): Promise<number | undefined> {
-  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant);
+  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant, options);
   return policy?.limits?.maxActiveRuns ?? tenantActiveRunLimit(options);
 }
 
 async function effectiveTenantExecutorLimits(options: HarnessServerOptions, tenant: string): Promise<TenantExecutorLimits | undefined> {
-  const limits = (await readTenantPolicy(resolve(options.workspaceRoot), tenant))?.limits;
+  const limits = (await readTenantPolicy(resolve(options.workspaceRoot), tenant, options))?.limits;
   const executorLimits = compactObject({
     cpus: limits?.executorCpus,
     memory: limits?.executorMemory,
@@ -2813,12 +2796,12 @@ async function effectiveTenantExecutorLimits(options: HarnessServerOptions, tena
 }
 
 async function effectiveTenantExecutorTemplateParameters(options: HarnessServerOptions, tenant: string): Promise<string[] | undefined> {
-  return (await readTenantPolicy(resolve(options.workspaceRoot), tenant))?.executorTemplateParameters;
+  return (await readTenantPolicy(resolve(options.workspaceRoot), tenant, options))?.executorTemplateParameters;
 }
 
 async function effectiveTenantAllowedTools(options: HarnessServerOptions, tenant: string): Promise<string[]> {
   const serverTools = options.allowedTools ?? [];
-  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant);
+  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant, options);
   if (policy?.allowedTools === undefined) return serverTools;
   const denied = policy.allowedTools.filter((tool) => !serverTools.includes(tool));
   if (denied.length) {
@@ -2896,6 +2879,29 @@ async function tryAcquireRunAdmissionClaim(
   options: HarnessServerOptions,
   run: Pick<HarnessRunStart, "tenant" | "project" | "runId" | "runRoot">,
 ): Promise<RunAdmissionClaimResult> {
+  if (options.stateBackend) {
+    const claim = runAdmissionClaimFor(run, options);
+    const key = runAdmissionBackendKey(claim);
+    const owner = runAdmissionBackendOwner(run.runId);
+    const lease = await options.stateBackend.leases.acquire(key, owner, runLeaseTtlMs(options), claim);
+    if (!lease) {
+      const blocking = await options.stateBackend.leases.get<RunAdmissionClaim>(key);
+      return { ok: false, runId: blocking?.value.runId ?? "unknown" };
+    }
+    return {
+      ok: true,
+      handle: {
+        claim,
+        refresh: async () => {
+          const refreshed = await options.stateBackend?.leases.refresh(key, owner, runLeaseTtlMs(options));
+          if (!refreshed) throw new Error(`run admission lease lost: ${claim.runId}`);
+        },
+        release: async () => {
+          await options.stateBackend?.leases.release(key, owner);
+        },
+      },
+    };
+  }
   const lockPath = runAdmissionLockPath(options, run);
   await mkdir(dirname(lockPath), { recursive: true });
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -2915,6 +2921,16 @@ async function tryAcquireRunAdmissionClaim(
     }
   }
   return { ok: false, runId: "unknown" };
+}
+
+function runAdmissionBackendKey(claim: RunAdmissionClaim): string {
+  return claim.scope === "run"
+    ? `run-admission:${claim.tenant}:${claim.project}:${claim.runId}`
+    : `run-admission:${claim.tenant}:${claim.project}`;
+}
+
+function runAdmissionBackendOwner(runId: string): string {
+  return `run:${runId}`;
 }
 
 function runAdmissionClaimHandle(options: HarnessServerOptions, lockPath: string, claim: RunAdmissionClaim): RunAdmissionClaimHandle {
@@ -2971,7 +2987,7 @@ async function readRunAdmissionClaim(lockPath: string): Promise<RunAdmissionClai
 
 async function refreshRunAdmissionClaim(options: HarnessServerOptions, lockPath: string, claim: RunAdmissionClaim): Promise<void> {
   const current = await readRunAdmissionClaim(lockPath);
-  if (current?.runId !== claim.runId) return;
+  if (current?.runId !== claim.runId) throw new Error(`run admission lease lost: ${claim.runId}`);
   await writeJsonFileAtomic(lockPath, runAdmissionClaimFor(claim, options));
 }
 
@@ -3021,6 +3037,32 @@ async function tryAcquireTenantRunAdmissionClaim(
   run: Pick<HarnessRunStart, "tenant" | "project" | "runId">,
   limit: number,
 ): Promise<TenantRunAdmissionClaimResult> {
+  if (options.stateBackend) {
+    const claim = tenantRunAdmissionClaimFor(run, limit, options);
+    const scope = tenantRunCapacityScope(run.tenant);
+    const owner = runAdmissionBackendOwner(run.runId);
+    const result = await options.stateBackend.capacityLeases.acquire(scope, run.runId, owner, limit, runLeaseTtlMs(options), claim);
+    if (!result.lease) {
+      return {
+        ok: false,
+        runIds: result.active.map((lease) => (lease.value as TenantRunAdmissionClaim).runId).sort((a, b) => a.localeCompare(b)),
+        limit,
+      };
+    }
+    return {
+      ok: true,
+      handle: {
+        claim,
+        refresh: async () => {
+          const refreshed = await options.stateBackend?.capacityLeases.refresh(scope, run.runId, owner, runLeaseTtlMs(options));
+          if (!refreshed) throw new Error(`tenant run capacity lease lost: ${claim.runId}`);
+        },
+        release: async () => {
+          await options.stateBackend?.capacityLeases.release(scope, run.runId, owner);
+        },
+      },
+    };
+  }
   const releaseMutex = await acquireTenantRunAdmissionMutex(options, run.tenant);
   try {
     const activeRunIds = await activeTenantRunAdmissionClaimIds(options, run.tenant);
@@ -3040,9 +3082,17 @@ async function tryAcquireTenantRunAdmissionClaim(
   }
 }
 
+function tenantRunCapacityScope(tenant: string): string {
+  return `tenant-runs:${tenant}`;
+}
+
 async function activeTenantRunAdmissionClaimIds(options: HarnessServerOptions, tenant: string): Promise<string[]> {
+  if (options.stateBackend) {
+    const leases = await options.stateBackend.capacityLeases.list<TenantRunAdmissionClaim>(tenantRunCapacityScope(tenant));
+    return leases.map((lease) => lease.value.runId).sort((a, b) => a.localeCompare(b));
+  }
   const root = tenantRunAdmissionRoot(options, tenant);
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
@@ -3122,7 +3172,7 @@ async function refreshTenantRunAdmissionClaim(
   claim: TenantRunAdmissionClaim,
 ): Promise<void> {
   const current = await readTenantRunAdmissionClaim(claimPath);
-  if (current?.runId !== claim.runId) return;
+  if (current?.runId !== claim.runId) throw new Error(`tenant run capacity lease lost: ${claim.runId}`);
   await writeJsonFileAtomic(claimPath, tenantRunAdmissionClaimFor(claim, claim.limit, options));
 }
 
@@ -3296,6 +3346,9 @@ async function tryAcquireGlobalWorkspaceSessionAdmissionClaim(
   sessionId: string,
   limit: number,
 ): Promise<WorkspaceSessionAdmissionClaimResult> {
+  if (options.stateBackend) {
+    return acquireWorkspaceSessionCapacityLease(options, "workspace-sessions:global", context, route, sessionId, limit);
+  }
   const releaseMutex = await acquireWorkspaceSessionAdmissionMutex(options, globalWorkspaceSessionAdmissionLockDir(options));
   try {
     const activeSessionIds = await activeWorkspaceSessionAdmissionClaimIds(options, globalWorkspaceSessionAdmissionRoot(options));
@@ -3322,6 +3375,9 @@ async function tryAcquireTenantWorkspaceSessionAdmissionClaim(
   sessionId: string,
   limit: number,
 ): Promise<WorkspaceSessionAdmissionClaimResult> {
+  if (options.stateBackend) {
+    return acquireWorkspaceSessionCapacityLease(options, `workspace-sessions:tenant:${context.tenant}`, context, route, sessionId, limit);
+  }
   const releaseMutex = await acquireWorkspaceSessionAdmissionMutex(options, workspaceSessionAdmissionLockDir(options, context.tenant));
   try {
     const activeSessionIds = await activeWorkspaceSessionAdmissionClaimIds(options, workspaceSessionAdmissionRoot(options, context.tenant), (claim) => claim.tenant === context.tenant);
@@ -3341,12 +3397,47 @@ async function tryAcquireTenantWorkspaceSessionAdmissionClaim(
   }
 }
 
+async function acquireWorkspaceSessionCapacityLease(
+  options: HarnessServerOptions,
+  scope: string,
+  context: Pick<HarnessWorkspaceContext, "tenant" | "project">,
+  route: ActiveWorkspaceSession["route"],
+  sessionId: string,
+  limit: number,
+): Promise<WorkspaceSessionAdmissionClaimResult> {
+  const backend = options.stateBackend;
+  if (!backend) throw new Error("state backend is required for capacity lease acquisition");
+  const claim = workspaceSessionAdmissionClaimFor(context, route, sessionId, limit, options);
+  const owner = `session:${sessionId}`;
+  const result = await backend.capacityLeases.acquire(scope, sessionId, owner, limit, runLeaseTtlMs(options), claim);
+  if (!result.lease) {
+    return {
+      ok: false,
+      sessionIds: result.active.map((lease) => (lease.value as WorkspaceSessionAdmissionClaim).sessionId).sort((a, b) => a.localeCompare(b)),
+      limit,
+    };
+  }
+  return {
+    ok: true,
+    handle: {
+      claim,
+      refresh: async () => {
+        const refreshed = await backend.capacityLeases.refresh(scope, sessionId, owner, runLeaseTtlMs(options));
+        if (!refreshed) throw new Error(`workspace session capacity lease lost: ${sessionId}`);
+      },
+      release: async () => {
+        await backend.capacityLeases.release(scope, sessionId, owner);
+      },
+    },
+  };
+}
+
 async function activeWorkspaceSessionAdmissionClaimIds(
   options: HarnessServerOptions,
   root: string,
   includeClaim: (claim: WorkspaceSessionAdmissionClaim) => boolean = () => true,
 ): Promise<string[]> {
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(root, { withFileTypes: true });
   } catch (error) {
@@ -3441,7 +3532,7 @@ async function refreshWorkspaceSessionAdmissionClaim(
   claim: WorkspaceSessionAdmissionClaim,
 ): Promise<void> {
   const current = await readWorkspaceSessionAdmissionClaim(claimPath);
-  if (current?.sessionId !== claim.sessionId) return;
+  if (current?.sessionId !== claim.sessionId) throw new Error(`workspace session admission lease lost: ${claim.sessionId}`);
   const route: ActiveWorkspaceSession["route"] = claim.route === "run"
     ? { kind: "run", runId: claim.runId ?? "" }
     : { kind: "project" };
@@ -3485,34 +3576,57 @@ async function acquireWorkspaceSessionAdmissionMutex(options: HarnessServerOptio
   }
 }
 
-function startWorkspaceSessionAdmissionClaimHeartbeat(options: HarnessServerOptions, claim: WorkspaceSessionAdmissionClaimHandle): () => void {
+function startWorkspaceSessionAdmissionClaimHeartbeat(
+  options: HarnessServerOptions,
+  claim: WorkspaceSessionAdmissionClaimHandle,
+  onFailure: (error: unknown) => void,
+): () => void {
+  return startAdmissionClaimHeartbeat(options, () => claim.refresh(), onFailure);
+}
+
+function startRunAdmissionClaimHeartbeat(
+  options: HarnessServerOptions,
+  claim: RunAdmissionClaimHandle,
+  onFailure: (error: unknown) => void,
+): () => void {
+  return startAdmissionClaimHeartbeat(options, () => claim.refresh(), onFailure);
+}
+
+function startAdmissionClaimHeartbeat(
+  options: HarnessServerOptions,
+  refresh: () => Promise<void>,
+  onFailure: (error: unknown) => void,
+): () => void {
   let stopped = false;
-  const heartbeat = setInterval(() => {
-    if (stopped) return;
-    void claim.refresh().catch(() => undefined);
-  }, runHeartbeatIntervalMs(options));
-  heartbeat.unref?.();
-  return () => {
+  let refreshing = false;
+  let heartbeat: ReturnType<typeof setInterval>;
+  const stop = () => {
     stopped = true;
     clearInterval(heartbeat);
   };
+  heartbeat = setInterval(() => {
+    if (stopped || refreshing) return;
+    refreshing = true;
+    void refresh()
+      .catch((error) => {
+        stop();
+        onFailure(error);
+      })
+      .finally(() => {
+        refreshing = false;
+      });
+  }, runHeartbeatIntervalMs(options));
+  heartbeat.unref?.();
+  return stop;
+}
+
+function runAdmissionHeartbeatError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`run admission heartbeat failed: ${message}`);
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function startRunAdmissionClaimHeartbeat(options: HarnessServerOptions, claim: RunAdmissionClaimHandle): () => void {
-  let stopped = false;
-  const heartbeat = setInterval(() => {
-    if (stopped) return;
-    void claim.refresh().catch(() => undefined);
-  }, runHeartbeatIntervalMs(options));
-  heartbeat.unref?.();
-  return () => {
-    stopped = true;
-    clearInterval(heartbeat);
-  };
 }
 
 function activeWorkspaceSessionCount(activeSessions: Map<string, ActiveWorkspaceSession>): number {
@@ -3832,24 +3946,26 @@ async function enforceModelUsageTokenLimitsForBody(
   requester: RunRequester | undefined,
 ): Promise<void> {
   if (runAgentMetadata(body, options).agentMode !== "model") return;
-  await enforceModelUsageTokenLimits(workspaceRoot, tenant, project, requester);
+  await enforceModelUsageTokenLimits(workspaceRoot, options, tenant, project, requester);
 }
 
 async function enforceModelUsageTokenLimitsForRun(
   workspaceRoot: string,
+  options: HarnessServerOptions,
   run: Pick<HarnessRunStart, "tenant" | "project" | "metadata" | "requester">,
 ): Promise<void> {
   if (run.metadata.agentMode !== "model") return;
-  await enforceModelUsageTokenLimits(workspaceRoot, run.tenant, run.project, run.requester);
+  await enforceModelUsageTokenLimits(workspaceRoot, options, run.tenant, run.project, run.requester);
 }
 
 async function enforceModelUsageTokenLimits(
   workspaceRoot: string,
+  options: HarnessServerOptions,
   tenant: string,
   project: string,
   requester: RunRequester | undefined,
 ): Promise<void> {
-  const policyLimits = (await readTenantPolicy(workspaceRoot, tenant))?.limits;
+  const policyLimits = (await readTenantPolicy(workspaceRoot, tenant, options))?.limits;
   const projectTokenLimit = policyLimits?.modelProjectTotalTokenLimit;
   const requesterTokenLimit = policyLimits?.modelRequesterTotalTokenLimit;
   const projectCostLimit = policyLimits?.modelProjectCostUsdLimit;
@@ -4105,6 +4221,15 @@ async function persistedRunningRunHasActiveAdmissionClaim(
   runDir: string,
   state: RunningRunStatus,
 ): Promise<boolean> {
+  if (options.stateBackend) {
+    const expected = runAdmissionClaimFor(state, options);
+    const lease = await options.stateBackend.leases.get<RunAdmissionClaim>(runAdmissionBackendKey(expected));
+    const claim = lease?.value;
+    return claim?.tenant === state.tenant
+      && claim.project === state.project
+      && claim.runId === state.runId
+      && !runAdmissionClaimIsStale(claim);
+  }
   const claim = await readRunAdmissionClaim(runAdmissionLockPath(options, {
     runRoot: dirname(runDir),
     runId: state.runId,
@@ -4317,6 +4442,7 @@ async function harnessServerStatus(
       runWorkspaceIsolation: runWorkspaceIsolation(options),
       runCreateIdempotency: runCreateIdempotencyStatus(),
       concurrencyAdmission: await harnessConcurrencyAdmissionStatus(options),
+      stateBackend: harnessStateBackendStatus(options),
     },
     readiness: await harnessProfileReadiness(workspaceRoot, options, allowedTools, undefined, controlPlaneDiscovery),
     limits: harnessServerLimits(options),
@@ -4337,6 +4463,23 @@ async function harnessServerStatus(
       allowedTools,
     },
     visionLock: HARNESS_VISION_LOCK,
+  };
+}
+
+function harnessStateBackendStatus(options: HarnessServerOptions): HarnessStateBackendStatus {
+  if (options.stateBackend?.kind === "postgres-redis") {
+    return {
+      kind: "postgres-redis",
+      metadata: "postgresql",
+      coordination: "redis",
+      distributed: true,
+    };
+  }
+  return {
+    kind: options.stateBackend?.kind ?? "file",
+    metadata: "filesystem",
+    coordination: "filesystem",
+    distributed: false,
   };
 }
 
@@ -4505,6 +4648,7 @@ async function harnessTenantServerStatus(
       runWorkspaceIsolation: runWorkspaceIsolation(options),
       runCreateIdempotency: runCreateIdempotencyStatus(),
       concurrencyAdmission: await harnessConcurrencyAdmissionStatus(options, tenant),
+      stateBackend: harnessStateBackendStatus(options),
     },
     readiness: await harnessProfileReadiness(workspaceRoot, options, allowedTools, tenant, controlPlaneDiscovery),
     visionLock: HARNESS_VISION_LOCK,
@@ -5039,7 +5183,7 @@ async function tenantModelKeyCoverage(
   policyKeyScoped: boolean;
   missingEnvNames: string[];
 }> {
-  const policy = await readTenantPolicy(workspaceRoot, tenant);
+  const policy = await readTenantPolicy(workspaceRoot, tenant, options);
   const fallbackEnvName = policy?.modelKeyEnv ?? options.tenantModelKeyEnvs?.[tenant];
   const explicitKeyEnvNames = [
     ...(options.tenantApiKeys?.[tenant] ?? []),
@@ -5097,28 +5241,31 @@ async function tenantAuthTenantNames(workspaceRoot: string, options: HarnessServ
   for (const [tenant, keys] of Object.entries(options.tenantApiKeys ?? {})) {
     if (keys.length > 0 && isSafeTenantDirectoryName(tenant)) tenants.add(tenant);
   }
-  for (const tenant of await policyStatusAccessTenantNames(workspaceRoot)) {
+  for (const tenant of await policyStatusAccessTenantNames(workspaceRoot, options)) {
     tenants.add(tenant);
   }
   return [...tenants].sort((a, b) => a.localeCompare(b));
 }
 
-async function policyStatusAccessTenantNames(workspaceRoot: string): Promise<string[]> {
-  let entries;
+async function policyStatusAccessTenantNames(workspaceRoot: string, options: HarnessServerOptions): Promise<string[]> {
+  let entries: Dirent[];
   try {
     entries = await readdir(workspaceRoot, { withFileTypes: true });
   } catch (error) {
-    if (isNotFound(error)) return [];
-    throw error;
+    if (isNotFound(error)) entries = [];
+    else throw error;
   }
 
-  const tenants: string[] = [];
+  const tenants = new Set<string>();
+  for (const document of await options.stateBackend?.documents.list<unknown>("tenant-policy") ?? []) {
+    if (isSafeTenantDirectoryName(document.key) && tenantPolicyFromUnknown(document.value).apiKeys?.length) tenants.add(document.key);
+  }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!isSafeTenantDirectoryName(entry.name)) continue;
-    if ((await readTenantPolicy(workspaceRoot, entry.name))?.apiKeys?.length) tenants.push(entry.name);
+    if ((await readTenantPolicy(workspaceRoot, entry.name, options))?.apiKeys?.length) tenants.add(entry.name);
   }
-  return tenants;
+  return [...tenants].sort((left, right) => left.localeCompare(right));
 }
 
 async function tenantAuthReadiness(
@@ -5135,8 +5282,8 @@ async function tenantAuthReadiness(
     .filter(([tenant]) => isSafeTenantDirectoryName(tenant) && (!tenantScope || tenant === tenantScope))
     .flatMap(([, keys]) => keys);
   const policyKeys = tenantScope
-    ? (await readTenantPolicy(workspaceRoot, tenantScope))?.apiKeys ?? []
-    : await policyStatusAccessKeys(workspaceRoot);
+    ? (await readTenantPolicy(workspaceRoot, tenantScope, options))?.apiKeys ?? []
+    : await policyStatusAccessKeys(workspaceRoot, options);
   for (const key of [...configuredKeys, ...policyKeys]) {
     roles[key.role] = true;
   }
@@ -5162,9 +5309,9 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
   const runPresence: RunPresenceRegistry = new Map();
   const projectPresence: RunPresenceRegistry = new Map();
   const queuedRuns: QueuedRun[] = [];
-  const serverOptions = { ...options, workspaceRoot, allowedTools };
+  const serverOptions = { ...options, workspaceRoot, allowedTools, instanceId: options.instanceId ?? randomUUID() };
   const startedAt = new Date().toISOString();
-  const appendAuditEvent = createTenantAuditAppender(workspaceRoot);
+  const appendAuditEvent = createTenantAuditAppender(workspaceRoot, options.stateBackend?.events);
   const operatorCockpitQueueBackend = createOperatorCockpitQueueBackend(serverOptions);
   const operatorCockpitExecutionQueue: OperatorCockpitExecutionQueueItem[] = [];
   let lastOperatorCockpitQueuedExecution: OperatorCockpitQueuedExecutionSummary | undefined;
@@ -5241,6 +5388,10 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
       }
     })();
   };
+  const distributedQueuePoll = serverOptions.stateBackend
+    ? setInterval(scheduleQueuedRuns, DISTRIBUTED_RUN_QUEUE_POLL_MS)
+    : undefined;
+  distributedQueuePoll?.unref?.();
   const runStaleCleanup = async (): Promise<void> => {
     if (!serverOptions.autoAbandonStaleRuns) return;
     try {
@@ -5331,305 +5482,123 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
       }
 
       if (req.method === "POST") {
-        const giteaWebhook = await handleGiteaIssueCommentWebhook(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, scheduleQueuedRuns, appendAuditEvent);
-        if (giteaWebhook) return;
-
-        const brainSignal = await handleCreateBrainSignal(url, req, res, serverOptions, appendAuditEvent);
-        if (brainSignal) return;
-
-        const policyApiKeyRevoke = await handleRevokeTenantPolicyApiKey(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (policyApiKeyRevoke) return;
-
-        const policyApiKey = await handleCreateTenantPolicyApiKey(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (policyApiKey) return;
-
-        const policySettings = await handleUpdateTenantPolicySettings(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (policySettings) return;
-
-        const restoreDryRun = await handleTenantControlPlaneRestoreDryRun(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (restoreDryRun) return;
-
-        const agentGitServiceProvisioningPlanApply = await handleApplyTenantAgentGitServiceProvisioningPlan(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (agentGitServiceProvisioningPlanApply) return;
-
-        const operatorTargetInputTemplate = await handleWriteTenantOperatorTargetInputTemplate(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorTargetInputTemplate) return;
-
-        const operatorRealStagingTargetInput = await handleWriteTenantOperatorRealStagingTargetInput(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorRealStagingTargetInput) return;
-
-        const operatorRealStagingTargetsApply = await handleApplyTenantOperatorRealStagingTargets(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorRealStagingTargetsApply) return;
-
-        const operatorBundleRefresh = await handleRefreshTenantOperatorBundle(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorBundleRefresh) return;
-
-        const operatorGithubActionsTargetInput = await handleWriteTenantOperatorGithubActionsTargetInput(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorGithubActionsTargetInput) return;
-
-        const operatorCiArtifactImport = await handleImportTenantOperatorCiArtifact(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorCiArtifactImport) return;
-
-        const operatorAgsEvidenceImport = await handleImportTenantOperatorAgsEvidence(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorAgsEvidenceImport) return;
-
-        const operatorAgsEvidenceSync = await handleSyncTenantOperatorAgsEvidence(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorAgsEvidenceSync) return;
-
-        const operatorCockpitLoopExecuted = await handleExecuteTenantOperatorCockpitLoop(url, req, res, workspaceRoot, serverOptions, appendAuditEvent, operatorCockpitQueueBackend, operatorCockpitExecutionQueue, scheduleOperatorCockpitExecutionQueue);
-        if (operatorCockpitLoopExecuted) return;
-
-        const escalationDecision = await handleDecideTenantPolicyEscalation(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (escalationDecision) return;
-
-        const escalation = await handleCreateTenantPolicyEscalation(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (escalation) return;
-
-        const createdProject = await handleCreateProject(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (createdProject) return;
-
-        const agentGitServiceProvisioned = await handleProvisionAgentGitServiceProjectAgent(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (agentGitServiceProvisioned) return;
-
-        const createdVasCase = await handleCreateVasLiteCase(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (createdVasCase) return;
-
-        const reviewedVasCase = await handleReviewVasLiteCase(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (reviewedVasCase) return;
-
-        const claimedVasCase = await handleClaimVasLiteCase(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (claimedVasCase) return;
-
-        const createdVasReviewRun = await handleCreateVasLiteCaseReviewRun(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, queuedRuns, scheduleQueuedRuns, appendAuditEvent);
-        if (createdVasReviewRun) return;
-
-        const stoppedSession = await handleStopWorkspaceSession(url, req, res, serverOptions, activeSessions, appendAuditEvent);
-        if (stoppedSession) return;
-
-        const sessionInput = await handleWriteWorkspaceSessionInput(url, req, res, serverOptions, activeSessions, appendAuditEvent);
-        if (sessionInput) return;
-
-        const runSession = await handleCreateRunWorkspaceSession(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, activeSessions, appendAuditEvent);
-        if (runSession) return;
-
-        const projectSession = await handleCreateWorkspaceSession(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, activeSessions, appendAuditEvent);
-        if (projectSession) return;
-
-        const runFile = await handleWriteRunWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, runPresence);
-        if (runFile) return;
-
-        const runFileMove = await handleMoveRunWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, runPresence);
-        if (runFileMove) return;
-
-        const runCommit = await handleCreateRunWorkspaceCommit(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent);
-        if (runCommit) return;
-
-        const runPullRequest = await handleCreateRunWorkspacePullRequest(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent);
-        if (runPullRequest) return;
-
-        const runCommand = await handleRunScopedWorkspaceCommand(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent);
-        if (runCommand) return;
-
-        const handoffFollowup = await handleCreateRunHandoffFollowup(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, scheduleQueuedRuns, appendAuditEvent);
-        if (handoffFollowup) return;
-
-        const command = await handleRunWorkspaceCommand(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent);
-        if (command) return;
-
-        const file = await handleWriteWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, projectPresence);
-        if (file) return;
-
-        const fileMove = await handleMoveWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, projectPresence);
-        if (fileMove) return;
-
-        const projectCommit = await handleCreateWorkspaceCommit(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent);
-        if (projectCommit) return;
-
-        const projectPullRequest = await handleCreateWorkspacePullRequest(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent);
-        if (projectPullRequest) return;
-
-        const projectPresenceUpdated = await handleUpdateProjectPresence(url, req, res, workspaceRoot, serverOptions, projectPresence);
-        if (projectPresenceUpdated) return;
-
-        const abandoned = await handleAbandonRun(url, req, res, workspaceRoot, serverOptions, activeRuns, activeWorkspaces, appendAuditEvent);
-        if (abandoned) return;
-
-        const cancelled = await handleCancelRun(url, req, res, workspaceRoot, serverOptions, activeRuns, queuedRuns, scheduleQueuedRuns, appendAuditEvent);
-        if (cancelled) return;
-
-        const resumed = await handleResumeRun(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, scheduleQueuedRuns, appendAuditEvent);
-        if (resumed) return;
-
-        const claimedReview = await handleClaimRunReview(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (claimedReview) return;
-
-        const reviewed = await handleReviewRun(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (reviewed) return;
-
-        const deployed = await handleDeploymentRun(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (deployed) return;
-
-        const syncedIssueComments = await handleSyncRunIssueComments(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, scheduleQueuedRuns, appendAuditEvent);
-        if (syncedIssueComments) return;
-
-        const runComment = await handleCreateRunComment(url, req, res, workspaceRoot, serverOptions, activeRuns, appendAuditEvent);
-        if (runComment) return;
-
-        const presence = await handleUpdateRunPresence(url, req, res, workspaceRoot, serverOptions, runPresence);
-        if (presence) return;
+        const routes: HarnessServerRouteCandidate[] = [
+          { domain: "control-plane", name: "issue-comment-webhook", handle: () => handleGiteaIssueCommentWebhook(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, scheduleQueuedRuns, appendAuditEvent) },
+          { domain: "policy", name: "brain-signal-create", handle: () => handleCreateBrainSignal(url, req, res, serverOptions, appendAuditEvent) },
+          { domain: "policy", name: "api-key-revoke", handle: () => handleRevokeTenantPolicyApiKey(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "policy", name: "api-key-create", handle: () => handleCreateTenantPolicyApiKey(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "policy", name: "settings-update", handle: () => handleUpdateTenantPolicySettings(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "control-plane", name: "restore-dry-run", handle: () => handleTenantControlPlaneRestoreDryRun(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "control-plane", name: "ags-provisioning-plan-apply", handle: () => handleApplyTenantAgentGitServiceProvisioningPlan(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "target-input-template", handle: () => handleWriteTenantOperatorTargetInputTemplate(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "real-staging-input", handle: () => handleWriteTenantOperatorRealStagingTargetInput(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "real-staging-apply", handle: () => handleApplyTenantOperatorRealStagingTargets(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "bundle-refresh", handle: () => handleRefreshTenantOperatorBundle(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "github-actions-input", handle: () => handleWriteTenantOperatorGithubActionsTargetInput(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "ci-artifact-import", handle: () => handleImportTenantOperatorCiArtifact(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "ags-evidence-import", handle: () => handleImportTenantOperatorAgsEvidence(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "ags-evidence-sync", handle: () => handleSyncTenantOperatorAgsEvidence(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "cockpit-loop-execute", handle: () => handleExecuteTenantOperatorCockpitLoop(url, req, res, workspaceRoot, serverOptions, appendAuditEvent, operatorCockpitQueueBackend, operatorCockpitExecutionQueue, scheduleOperatorCockpitExecutionQueue) },
+          { domain: "policy", name: "escalation-decide", handle: () => handleDecideTenantPolicyEscalation(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "policy", name: "escalation-create", handle: () => handleCreateTenantPolicyEscalation(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "workspace", name: "project-create", handle: () => handleCreateProject(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "control-plane", name: "ags-project-agent-provision", handle: () => handleProvisionAgentGitServiceProjectAgent(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "vas", name: "case-create", handle: () => handleCreateVasLiteCase(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "vas", name: "case-review", handle: () => handleReviewVasLiteCase(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "vas", name: "case-claim", handle: () => handleClaimVasLiteCase(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "vas", name: "review-run-create", handle: () => handleCreateVasLiteCaseReviewRun(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, queuedRuns, scheduleQueuedRuns, appendAuditEvent) },
+          { domain: "workspace", name: "session-stop", handle: () => handleStopWorkspaceSession(url, req, res, serverOptions, activeSessions, appendAuditEvent) },
+          { domain: "workspace", name: "session-input", handle: () => handleWriteWorkspaceSessionInput(url, req, res, serverOptions, activeSessions, appendAuditEvent) },
+          { domain: "workspace", name: "run-session-create", handle: () => handleCreateRunWorkspaceSession(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, activeSessions, appendAuditEvent) },
+          { domain: "workspace", name: "project-session-create", handle: () => handleCreateWorkspaceSession(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, activeSessions, appendAuditEvent) },
+          { domain: "workspace", name: "run-file-write", handle: () => handleWriteRunWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, runPresence) },
+          { domain: "workspace", name: "run-file-move", handle: () => handleMoveRunWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, runPresence) },
+          { domain: "workspace", name: "run-commit", handle: () => handleCreateRunWorkspaceCommit(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent) },
+          { domain: "workspace", name: "run-pull-request", handle: () => handleCreateRunWorkspacePullRequest(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent) },
+          { domain: "workspace", name: "run-command", handle: () => handleRunScopedWorkspaceCommand(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent) },
+          { domain: "runs", name: "handoff-followup", handle: () => handleCreateRunHandoffFollowup(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, scheduleQueuedRuns, appendAuditEvent) },
+          { domain: "workspace", name: "project-command", handle: () => handleRunWorkspaceCommand(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent) },
+          { domain: "workspace", name: "project-file-write", handle: () => handleWriteWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, projectPresence) },
+          { domain: "workspace", name: "project-file-move", handle: () => handleMoveWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, projectPresence) },
+          { domain: "workspace", name: "project-commit", handle: () => handleCreateWorkspaceCommit(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent) },
+          { domain: "workspace", name: "project-pull-request", handle: () => handleCreateWorkspacePullRequest(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent) },
+          { domain: "workspace", name: "project-presence-update", handle: () => handleUpdateProjectPresence(url, req, res, workspaceRoot, serverOptions, projectPresence) },
+          { domain: "runs", name: "abandon", handle: () => handleAbandonRun(url, req, res, workspaceRoot, serverOptions, activeRuns, activeWorkspaces, appendAuditEvent) },
+          { domain: "runs", name: "cancel", handle: () => handleCancelRun(url, req, res, workspaceRoot, serverOptions, activeRuns, queuedRuns, scheduleQueuedRuns, appendAuditEvent) },
+          { domain: "runs", name: "resume", handle: () => handleResumeRun(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, scheduleQueuedRuns, appendAuditEvent) },
+          { domain: "runs", name: "review-claim", handle: () => handleClaimRunReview(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "runs", name: "review", handle: () => handleReviewRun(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "runs", name: "deployment", handle: () => handleDeploymentRun(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "runs", name: "issue-comments-sync", handle: () => handleSyncRunIssueComments(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, scheduleQueuedRuns, appendAuditEvent) },
+          { domain: "runs", name: "comment", handle: () => handleCreateRunComment(url, req, res, workspaceRoot, serverOptions, activeRuns, appendAuditEvent) },
+          { domain: "runs", name: "presence-update", handle: () => handleUpdateRunPresence(url, req, res, workspaceRoot, serverOptions, runPresence) },
+        ];
+        if (await dispatchHarnessServerRoutes(routes)) return;
       }
 
       if (req.method === "PUT") {
-        const projectRunPolicy = await handleUpdateProjectRunPolicy(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (projectRunPolicy) return;
-
-        const projectContract = await handleUpdateProjectContract(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (projectContract) return;
-
-        const projectDefaultSkills = await handleUpdateProjectDefaultSkills(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (projectDefaultSkills) return;
-
-        const projectSourceDefaults = await handleUpdateProjectSourceDefaults(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (projectSourceDefaults) return;
-
-        const policy = await handleUpdateTenantPolicy(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (policy) return;
+        if (await dispatchHarnessServerRoutes([
+          { domain: "policy", name: "project-run-policy", handle: () => handleUpdateProjectRunPolicy(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "policy", name: "project-contract", handle: () => handleUpdateProjectContract(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "policy", name: "project-default-skills", handle: () => handleUpdateProjectDefaultSkills(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "control-plane", name: "project-source-defaults", handle: () => handleUpdateProjectSourceDefaults(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "policy", name: "tenant-policy", handle: () => handleUpdateTenantPolicy(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+        ])) return;
       }
 
       if (req.method === "DELETE") {
-        const runFile = await handleDeleteRunWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, runPresence);
-        if (runFile) return;
-
-        const file = await handleDeleteWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, projectPresence);
-        if (file) return;
+        if (await dispatchHarnessServerRoutes([
+          { domain: "workspace", name: "run-file-delete", handle: () => handleDeleteRunWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, runPresence) },
+          { domain: "workspace", name: "project-file-delete", handle: () => handleDeleteWorkspaceFile(url, req, res, workspaceRoot, serverOptions, activeWorkspaces, appendAuditEvent, projectPresence) },
+        ])) return;
       }
 
       if (req.method === "GET") {
-        const access = await handleReadTenantAccess(url, req, res, serverOptions);
-        if (access) return;
-
-        const tenantStatus = await handleReadTenantStatus(url, req, res, workspaceRoot, serverOptions, allowedTools, startedAt, activeRunSlots, activeWorkspaces, queuedRuns, activeSessions);
-        if (tenantStatus) return;
-
-        const operatorCockpitLoop = await handleReadTenantOperatorCockpitLoop(url, req, res, workspaceRoot, serverOptions);
-        if (operatorCockpitLoop) return;
-
-        const operatorCockpitExecutionStatus = await handleReadTenantOperatorCockpitExecutionStatus(url, req, res, workspaceRoot, serverOptions, operatorCockpitQueueBackend, operatorCockpitExecutionQueue, lastOperatorCockpitQueuedExecution);
-        if (operatorCockpitExecutionStatus) return;
-
-        const operatorApprovals = await handleReadTenantOperatorApprovals(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorApprovals) return;
-
-        const operatorHandoffPacket = await handleReadTenantOperatorHandoffPacket(url, req, res, workspaceRoot, serverOptions, appendAuditEvent);
-        if (operatorHandoffPacket) return;
-
-        const backup = await handleReadTenantControlPlaneBackup(url, req, res, workspaceRoot, serverOptions);
-        if (backup) return;
-
-        const cutoverReadiness = await handleReadTenantControlPlaneCutoverReadiness(url, req, res, workspaceRoot, serverOptions);
-        if (cutoverReadiness) return;
-
-        const agentGitServiceProvisioningPlan = await handleReadTenantAgentGitServiceProvisioningPlan(url, req, res, workspaceRoot, serverOptions);
-        if (agentGitServiceProvisioningPlan) return;
-
-        const escalations = await handleListTenantPolicyEscalations(url, req, res, workspaceRoot, serverOptions);
-        if (escalations) return;
-
-        const policy = await handleReadTenantPolicy(url, req, res, workspaceRoot, serverOptions);
-        if (policy) return;
-
-        const audit = await handleReadTenantAudit(url, req, res, workspaceRoot, serverOptions);
-        if (audit) return;
-
-        const brainSignals = await handleReadTenantBrainSignals(url, req, res, workspaceRoot, serverOptions);
-        if (brainSignals) return;
-
-        const runCommands = await handleListRunWorkspaceCommands(url, req, res, workspaceRoot, serverOptions);
-        if (runCommands) return;
-
-        const projectCommands = await handleListWorkspaceCommands(url, req, res, workspaceRoot, serverOptions);
-        if (projectCommands) return;
-
-        const agentGitServiceProvisioningReceipt = await handleReadAgentGitServiceProjectProvisioningReceipt(url, req, res, workspaceRoot, serverOptions);
-        if (agentGitServiceProvisioningReceipt) return;
-
-        const runSessions = await handleListRunWorkspaceSessions(url, req, res, workspaceRoot, serverOptions, activeSessions);
-        if (runSessions) return;
-
-        const projectSessions = await handleListWorkspaceSessions(url, req, res, workspaceRoot, serverOptions, activeSessions);
-        if (projectSessions) return;
-
-        const projectPresenceListed = await handleListProjectPresence(url, req, res, workspaceRoot, serverOptions, projectPresence);
-        if (projectPresenceListed) return;
-
-        const vasReviewQueue = await handleListVasLiteReviewQueue(url, req, res, workspaceRoot, serverOptions);
-        if (vasReviewQueue) return;
-
-        const vasLearnings = await handleListVasLiteLearnings(url, req, res, workspaceRoot, serverOptions);
-        if (vasLearnings) return;
-
-        const vasCaseReviewPackage = await handleReadVasLiteCaseReviewPackage(url, req, res, workspaceRoot, serverOptions);
-        if (vasCaseReviewPackage) return;
-
-        const vasCaseRuns = await handleListVasLiteCaseRuns(url, req, res, workspaceRoot, serverOptions);
-        if (vasCaseRuns) return;
-
-        const vasCaseArtifacts = await handleReadVasLiteCaseArtifacts(url, req, res, workspaceRoot, serverOptions);
-        if (vasCaseArtifacts) return;
-
-        const vasCases = await handleListVasLiteCases(url, req, res, workspaceRoot, serverOptions);
-        if (vasCases) return;
-
-        const sessionEvents = await handleReadWorkspaceSessionEvents(url, req, res, serverOptions, activeSessions);
-        if (sessionEvents) return;
-
-        const handoffFollowups = await handleListRunHandoffFollowups(url, req, res, workspaceRoot, serverOptions);
-        if (handoffFollowups) return;
-
-        const handoffPackage = await handleReadRunHandoffPackage(url, req, res, workspaceRoot, serverOptions, activeSessions);
-        if (handoffPackage) return;
-
-        const reviewSummary = await handleReadRunReviewSummary(url, req, res, workspaceRoot, serverOptions);
-        if (reviewSummary) return;
-
-        const runDiff = await handleReadRunWorkspaceDiff(url, req, res, workspaceRoot, serverOptions);
-        if (runDiff) return;
-
-        const projectDiff = await handleReadProjectWorkspaceDiff(url, req, res, workspaceRoot, serverOptions);
-        if (projectDiff) return;
-
-        const runWorkspace = await handleReadRunWorkspaceInfo(url, req, res, workspaceRoot, serverOptions);
-        if (runWorkspace) return;
-
-        const projectWorkspace = await handleReadProjectWorkspaceInfo(url, req, res, workspaceRoot, serverOptions);
-        if (projectWorkspace) return;
-
-        const runFile = await handleReadRunWorkspaceFile(url, req, res, workspaceRoot, serverOptions);
-        if (runFile) return;
-
-        const file = await handleReadWorkspaceFile(url, req, res, workspaceRoot, serverOptions);
-        if (file) return;
-
-        const project = await handleReadProject(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence);
-        if (project) return;
-
-        const projects = await handleListProjects(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence);
-        if (projects) return;
-
-        const modelUsageWarnings = await handleListTenantModelUsageWarnings(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence);
-        if (modelUsageWarnings) return;
-
-        const workspaceUsageWarnings = await handleListTenantWorkspaceUsageWarnings(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence);
-        if (workspaceUsageWarnings) return;
-
-        const listed = await handleListRuns(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, queuedRuns);
-        if (listed) return;
-
-        const presence = await handleListRunPresence(url, req, res, workspaceRoot, serverOptions, runPresence);
-        if (presence) return;
-
-        const handled = await handleReadRun(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, queuedRuns);
-        if (handled) return;
+        const routes: HarnessServerRouteCandidate[] = [
+          { domain: "policy", name: "tenant-access", handle: () => handleReadTenantAccess(url, req, res, serverOptions) },
+          { domain: "policy", name: "tenant-status", handle: () => handleReadTenantStatus(url, req, res, workspaceRoot, serverOptions, allowedTools, startedAt, activeRunSlots, activeWorkspaces, queuedRuns, activeSessions) },
+          { domain: "operator", name: "cockpit-loop", handle: () => handleReadTenantOperatorCockpitLoop(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "operator", name: "cockpit-execution", handle: () => handleReadTenantOperatorCockpitExecutionStatus(url, req, res, workspaceRoot, serverOptions, operatorCockpitQueueBackend, operatorCockpitExecutionQueue, lastOperatorCockpitQueuedExecution) },
+          { domain: "operator", name: "approvals", handle: () => handleReadTenantOperatorApprovals(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "operator", name: "handoff-packet", handle: () => handleReadTenantOperatorHandoffPacket(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "control-plane", name: "backup", handle: () => handleReadTenantControlPlaneBackup(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "control-plane", name: "cutover-readiness", handle: () => handleReadTenantControlPlaneCutoverReadiness(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "control-plane", name: "ags-provisioning-plan", handle: () => handleReadTenantAgentGitServiceProvisioningPlan(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "policy", name: "escalations", handle: () => handleListTenantPolicyEscalations(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "policy", name: "tenant-policy", handle: () => handleReadTenantPolicy(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "policy", name: "audit", handle: () => handleReadTenantAudit(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "policy", name: "brain-signals", handle: () => handleReadTenantBrainSignals(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "run-commands", handle: () => handleListRunWorkspaceCommands(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "project-commands", handle: () => handleListWorkspaceCommands(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "control-plane", name: "ags-provisioning-receipt", handle: () => handleReadAgentGitServiceProjectProvisioningReceipt(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "run-sessions", handle: () => handleListRunWorkspaceSessions(url, req, res, workspaceRoot, serverOptions, activeSessions) },
+          { domain: "workspace", name: "project-sessions", handle: () => handleListWorkspaceSessions(url, req, res, workspaceRoot, serverOptions, activeSessions) },
+          { domain: "workspace", name: "project-presence", handle: () => handleListProjectPresence(url, req, res, workspaceRoot, serverOptions, projectPresence) },
+          { domain: "vas", name: "review-queue", handle: () => handleListVasLiteReviewQueue(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "vas", name: "learnings", handle: () => handleListVasLiteLearnings(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "vas", name: "case-review-package", handle: () => handleReadVasLiteCaseReviewPackage(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "vas", name: "case-runs", handle: () => handleListVasLiteCaseRuns(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "vas", name: "case-artifacts", handle: () => handleReadVasLiteCaseArtifacts(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "vas", name: "cases", handle: () => handleListVasLiteCases(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "session-events", handle: () => handleReadWorkspaceSessionEvents(url, req, res, serverOptions, activeSessions) },
+          { domain: "runs", name: "handoff-followups", handle: () => handleListRunHandoffFollowups(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "runs", name: "handoff-package", handle: () => handleReadRunHandoffPackage(url, req, res, workspaceRoot, serverOptions, activeSessions) },
+          { domain: "runs", name: "review-summary", handle: () => handleReadRunReviewSummary(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "run-diff", handle: () => handleReadRunWorkspaceDiff(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "project-diff", handle: () => handleReadProjectWorkspaceDiff(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "run-info", handle: () => handleReadRunWorkspaceInfo(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "project-info", handle: () => handleReadProjectWorkspaceInfo(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "run-file", handle: () => handleReadRunWorkspaceFile(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "project-file", handle: () => handleReadWorkspaceFile(url, req, res, workspaceRoot, serverOptions) },
+          { domain: "workspace", name: "project", handle: () => handleReadProject(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence) },
+          { domain: "workspace", name: "projects", handle: () => handleListProjects(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence) },
+          { domain: "policy", name: "model-usage-warnings", handle: () => handleListTenantModelUsageWarnings(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence) },
+          { domain: "policy", name: "workspace-usage-warnings", handle: () => handleListTenantWorkspaceUsageWarnings(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence) },
+          { domain: "runs", name: "list", handle: () => handleListRuns(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, queuedRuns) },
+          { domain: "runs", name: "presence", handle: () => handleListRunPresence(url, req, res, workspaceRoot, serverOptions, runPresence) },
+          { domain: "runs", name: "read", handle: () => handleReadRun(url, req, res, workspaceRoot, serverOptions, activeRunSlots, activeWorkspaces, queuedRuns) },
+        ];
+        if (await dispatchHarnessServerRoutes(routes)) return;
       }
 
       writeJson(res, 404, { error: "not found" });
@@ -5640,6 +5609,7 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
   });
   server.once("close", () => {
     closing = true;
+    if (distributedQueuePoll) clearInterval(distributedQueuePoll);
     queuedRunDrainRequested = false;
     queuedRuns.splice(0);
     operatorCockpitExecutionQueue.splice(0);
@@ -5698,7 +5668,7 @@ async function serverMetrics(
   const activeRunDetails = await statusActiveRunDetails(workspaceRoot, options, activeRunSlots);
   const activeSessionDetails = await statusActiveWorkspaceSessionDetails(workspaceRoot, options, activeSessions);
   const orphanedRuns = await orphanedRunningRunResourceStatuses(workspaceRoot, activeRunDetails);
-  const operationalBacklog = await metricsOperationalBacklog(workspaceRoot);
+  const operationalBacklog = await metricsOperationalBacklog(workspaceRoot, options);
   return prometheusMetrics([
     ["loom_harness_ready", "Whether the harness server readiness probe is ready.", readiness.ready ? 1 : 0],
     ["loom_harness_active_runs", "Active harness runs across the shared workspace root.", activeRunDetails.length],
@@ -5721,7 +5691,7 @@ interface MetricsOperationalBacklog {
   workspaceUsageWarningProjects: number;
 }
 
-async function metricsOperationalBacklog(workspaceRoot: string): Promise<MetricsOperationalBacklog> {
+async function metricsOperationalBacklog(workspaceRoot: string, options: HarnessServerOptions): Promise<MetricsOperationalBacklog> {
   const backlog: MetricsOperationalBacklog = {
     reviewRequiredRuns: 0,
     deploymentRequiredRuns: 0,
@@ -5731,7 +5701,7 @@ async function metricsOperationalBacklog(workspaceRoot: string): Promise<Metrics
 
   for (const tenant of await listWorkspaceTenantNames(workspaceRoot)) {
     const tenantRoot = join(workspaceRoot, tenant);
-    const policyLimits = (await readTenantPolicy(workspaceRoot, tenant))?.limits;
+    const policyLimits = (await readTenantPolicy(workspaceRoot, tenant, options))?.limits;
     for (const project of await listTenantProjectNames(workspaceRoot, tenant)) {
       const summary = await readProjectSummary(tenantRoot, tenant, project, policyLimits);
       backlog.reviewRequiredRuns += summary.reviewRequiredRunCount ?? 0;
@@ -5875,7 +5845,7 @@ async function handleReadTenantBrainSignals(
   await requireTenantAccess(req, tenant, options, url);
   const project = auditProjectFilter(url);
   const runId = brainSignalRunFilter(url);
-  const signals = filterTenantBrainSignalEvents(await readTenantAuditEvents(workspaceRoot, tenant), seqAfter(url), auditLimit(url), project, runId)
+  const signals = filterTenantBrainSignalEvents(await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events), seqAfter(url), auditLimit(url), project, runId)
     .map(tenantBrainSignalFeedEntry);
   const body: TenantBrainSignalFeedResponse = {
     tenant,
@@ -5913,7 +5883,7 @@ async function handleDecideTenantPolicyEscalation(
   let policy: TenantPolicy | undefined;
   let policyChange: TenantPolicyChange | undefined;
   if (decision === "approved") {
-    const currentPolicy = await readTenantPolicy(workspaceRoot, tenant);
+    const currentPolicy = await readTenantPolicy(workspaceRoot, tenant, options);
     policy = mergeApprovedTenantPolicyEscalation(currentPolicy, escalation, options);
     policyChange = tenantPolicyEscalationPolicyChange(currentPolicy, policy, escalation);
   }
@@ -5929,7 +5899,7 @@ async function handleDecideTenantPolicyEscalation(
   });
 
   if (policy) {
-    await writeTenantPolicy(workspaceRoot, tenant, policy);
+    await writeTenantPolicy(workspaceRoot, tenant, policy, options);
     await appendAuditEvent(tenant, "tenant_policy_updated", compactObject({
       ...tenantPolicyAuditData(policy),
       escalationId,
@@ -5963,7 +5933,7 @@ async function handleReadTenantPolicy(
 
   const tenant = requireSafeName(segments[1], "tenant");
   await requireTenantAccess(req, tenant, options, url);
-  writeJson(res, 200, sanitizeTenantPolicy(await readTenantPolicy(workspaceRoot, tenant)));
+  writeJson(res, 200, sanitizeTenantPolicy(await readTenantPolicy(workspaceRoot, tenant, options)));
   return true;
 }
 
@@ -8101,9 +8071,9 @@ async function handleUpdateTenantPolicy(
     throw badRequest(`tenant policy allowedTools not permitted by server: ${denied.join(", ")}`);
   }
 
-  const existing = await readTenantPolicy(workspaceRoot, tenant);
+  const existing = await readTenantPolicy(workspaceRoot, tenant, options);
   const policyChange = tenantPolicyReplacementChange(existing, policy);
-  await writeTenantPolicy(workspaceRoot, tenant, policy);
+  await writeTenantPolicy(workspaceRoot, tenant, policy, options);
   await appendAuditEvent(tenant, "tenant_policy_updated", compactObject({
     ...tenantPolicyAuditData(policy),
     policyChange,
@@ -8129,7 +8099,7 @@ async function handleCreateTenantPolicyApiKey(
   const body = tenantPolicyApiKeyCreateFromUnknown(await readTenantPolicyApiKeyCreateJson(req));
   const clientId = optionalClientId(body.clientId);
   const { apiKey, token } = tenantPolicyApiKeyFromCreateBody(body);
-  const existing = await readTenantPolicy(workspaceRoot, tenant);
+  const existing = await readTenantPolicy(workspaceRoot, tenant, options);
   const currentKeys = existing?.apiKeys ?? [];
   const duplicate = [...(options.tenantApiKeys?.[tenant] ?? []), ...currentKeys]
     .some((key) => tenantApiKeyMatches(key, token));
@@ -8142,7 +8112,7 @@ async function handleCreateTenantPolicyApiKey(
     schemaVersion: 1 as const,
     apiKeys: [...currentKeys, apiKey],
   });
-  await writeTenantPolicy(workspaceRoot, tenant, policy);
+  await writeTenantPolicy(workspaceRoot, tenant, policy, options);
   await appendAuditEvent(tenant, "tenant_api_key_created", compactObject({
     actor: apiKey.actor,
     keyRole: apiKey.role,
@@ -8179,7 +8149,7 @@ async function handleRevokeTenantPolicyApiKey(
   const clientId = optionalClientId(body.clientId);
   const actor = tenantPolicyApiKeyActor(body.actor);
   const role = body.role === undefined ? undefined : tenantPolicyRole(body.role, "role");
-  const existing = await readTenantPolicy(workspaceRoot, tenant);
+  const existing = await readTenantPolicy(workspaceRoot, tenant, options);
   const currentKeys = existing?.apiKeys ?? [];
   const revokedApiKeys = currentKeys.filter((key) => key.actor === actor && (role === undefined || key.role === role));
   const apiKeys = currentKeys.filter((key) => key.actor !== actor || (role !== undefined && key.role !== role));
@@ -8189,7 +8159,7 @@ async function handleRevokeTenantPolicyApiKey(
     schemaVersion: 1 as const,
     apiKeys,
   });
-  await writeTenantPolicy(workspaceRoot, tenant, policy);
+  await writeTenantPolicy(workspaceRoot, tenant, policy, options);
   await appendAuditEvent(tenant, "tenant_api_key_revoked", compactObject({
     actor,
     keyRole: role,
@@ -8223,10 +8193,10 @@ async function handleUpdateTenantPolicySettings(
   const access = await requireTenantAccess(req, tenant, options, url, "admin");
   const body = tenantPolicySettingsFromUnknown(await readTenantPolicySettingsJson(req));
   const clientId = optionalClientId(body.clientId);
-  const existing = await readTenantPolicy(workspaceRoot, tenant);
+  const existing = await readTenantPolicy(workspaceRoot, tenant, options);
   const policy = mergeTenantPolicySettings(existing, body, options);
   const policyChange = tenantPolicySettingsChange(existing, policy, body);
-  await writeTenantPolicy(workspaceRoot, tenant, policy);
+  await writeTenantPolicy(workspaceRoot, tenant, policy, options);
   await appendAuditEvent(tenant, "tenant_policy_updated", compactObject({
     ...tenantPolicyAuditData(policy),
     policyChange,
@@ -8253,14 +8223,14 @@ async function handleReadTenantAudit(
   await requireTenantAccess(req, tenant, options, url);
   const projectFilter = auditProjectFilter(url);
   if (stream) {
-    await streamTenantAuditEvents(res, workspaceRoot, tenant, seqAfter(url, req), projectFilter);
+    await streamTenantAuditEvents(res, workspaceRoot, tenant, seqAfter(url, req), projectFilter, options.stateBackend?.events);
     return true;
   }
 
   writeJson(
     res,
     200,
-    filterTenantAuditEvents(await readTenantAuditEvents(workspaceRoot, tenant), seqAfter(url), auditLimit(url), projectFilter),
+    filterTenantAuditEvents(await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events), seqAfter(url), auditLimit(url), projectFilter),
   );
   return true;
 }
@@ -8317,7 +8287,7 @@ async function handleRunScopedWorkspaceCommand(
   await requireTenantTool(options, tenant, "shell.exec", "workspace commands require shell.exec to be allowed by the server.");
 
   try {
-    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId);
+    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId, options);
     await runWorkspaceCommand(
       req,
       res,
@@ -8466,7 +8436,7 @@ async function handleCreateRunWorkspaceCommit(
     await commitWorkspace(
       req,
       res,
-      await runWorkspaceContext(url, workspaceRoot, tenant, runId),
+      await runWorkspaceContext(url, workspaceRoot, tenant, runId, options),
       { kind: "run", runId },
       options,
       activeWorkspaces,
@@ -8606,9 +8576,9 @@ async function handleCreateRunWorkspacePullRequest(
   }
   const runId = requireSafeName(segments[3], "runId");
   try {
-    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId);
+    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId, options);
     const runDir = join(workspaceRoot, tenant, context.project, ".loom", "runs", runId);
-    const state = await readRunState(runDir);
+    const state = await readRunState(runDir, options);
     if (state.status === "running") throw badRequest("cannot create a pull request for a running run.");
     if (state.status === "queued") throw badRequest("cannot create a pull request for a queued run.");
     const sourceDefaults = await readProjectSourceDefaults(join(workspaceRoot, tenant), context.project);
@@ -8751,7 +8721,7 @@ async function createWorkspacePullRequest(
 
     let runStatus: RunSummary["status"] | undefined;
     if (run && route.kind === "run") {
-      const withPullRequest = await attachWorkspacePullRequestToRunSummary(run.summary, run.runDir, request, result, reviewRequired, deploymentRequired, runEventContext(access, clientId));
+      const withPullRequest = await attachWorkspacePullRequestToRunSummary(options, run.summary, run.runDir, request, result, reviewRequired, deploymentRequired, runEventContext(access, clientId));
       const updated = await reportAgentGitServiceWorkspaceHandoffAttachment(options, withPullRequest, request, result);
       runStatus = updated.status;
     }
@@ -8779,6 +8749,7 @@ async function createWorkspacePullRequest(
 }
 
 async function attachWorkspacePullRequestToRunSummary(
+  options: HarnessServerOptions,
   summary: RunSummary,
   runDir: string,
   request: WorkspacePullRequestRequest,
@@ -8810,23 +8781,23 @@ async function attachWorkspacePullRequestToRunSummary(
     pullRequestUrl: result?.url,
     clientId: request.clientId,
     requester: summary.requester,
-  }));
+  }), options.stateBackend?.events);
   updated = { ...updated, eventCount: external.seq };
 
   if (reviewRequired && updated.status === "passed") {
     const review: ReviewGate = { required: true, status: "pending" };
-    const reviewEvent = await appendRunEvent(runDir, "review_gate", compactObject({ ...review, ...eventContext }));
+    const reviewEvent = await appendRunEvent(runDir, "review_gate", compactObject({ ...review, ...eventContext }), options.stateBackend?.events);
     updated = { ...updated, status: "review_required", review, eventCount: reviewEvent.seq };
   }
   if (deploymentRequired && !updated.deployment?.required && (updated.status === "passed" || updated.status === "review_required")) {
     const deployment: DeploymentGate = { required: true, status: "pending" };
-    const deploymentEvent = await appendRunEvent(runDir, "deployment_gate", compactObject({ ...deployment, ...eventContext }));
+    const deploymentEvent = await appendRunEvent(runDir, "deployment_gate", compactObject({ ...deployment, ...eventContext }), options.stateBackend?.events);
     const status = updated.status === "review_required" ? "review_required" : "deployment_required";
     updated = { ...updated, status, deployment, eventCount: deploymentEvent.seq };
   }
 
-  await writeRunSummary(updated);
-  await writeRunStatus(runDir, updated);
+  await writeRunSummary(updated, options);
+  await writeRunStatus(runDir, updated, options);
   return updated;
 }
 
@@ -8882,7 +8853,7 @@ async function reportAgentGitServiceWorkspaceHandoffAttachment(
       handoffPackageUrl,
       handoffFollowupsUrl,
       clientId: request.clientId,
-    });
+    }, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return recordRunExternalEffect(summary, {
@@ -8896,7 +8867,7 @@ async function reportAgentGitServiceWorkspaceHandoffAttachment(
       handoffFollowupsUrl,
       error: message,
       clientId: request.clientId,
-    });
+    }, options);
   }
 }
 
@@ -9192,7 +9163,7 @@ async function handleCreateRunWorkspaceSession(
   const access = await requireTenantAccess(req, tenant, options, url, "developer");
   const runId = requireSafeName(segments[3], "runId");
   try {
-    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId);
+    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId, options);
     const sessionId = randomUUID();
     await createWorkspaceSession(
       req,
@@ -9271,7 +9242,9 @@ async function createWorkspaceSession(
     const startedAt = new Date().toISOString();
     const idleTimeoutMs = workspaceSessionIdleTimeoutMs(options);
     const idleExpiresAt = workspaceSessionIdleExpiresAt(startedAt, idleTimeoutMs);
-    admissionHeartbeat = startWorkspaceSessionAdmissionClaimHeartbeat(options, sessionAdmission.handle);
+    admissionHeartbeat = startWorkspaceSessionAdmissionClaimHeartbeat(options, sessionAdmission.handle, () => {
+      void session.stop().catch(() => undefined);
+    });
     const active: ActiveWorkspaceSession = {
       sessionId,
       route,
@@ -9862,6 +9835,11 @@ async function workspaceSessionHasActiveAdmissionClaim(
   options: HarnessServerOptions,
   summary: WorkspaceSessionSummary,
 ): Promise<boolean> {
+  if (options.stateBackend) {
+    const scopes = ["workspace-sessions:global", `workspace-sessions:tenant:${summary.tenant}`];
+    const claims = (await Promise.all(scopes.map((scope) => options.stateBackend?.capacityLeases.list<WorkspaceSessionAdmissionClaim>(scope) ?? []))).flat();
+    return claims.some((lease) => workspaceSessionAdmissionClaimMatchesSummary(lease.value, summary));
+  }
   const claims = await Promise.all([
     readWorkspaceSessionAdmissionClaim(workspaceSessionAdmissionClaimPath(options, summary)),
     readWorkspaceSessionAdmissionClaim(globalWorkspaceSessionAdmissionClaimPath(options, summary)),
@@ -10040,7 +10018,7 @@ async function handleWriteRunWorkspaceFile(
   await requireTenantTool(options, tenant, "file.write", "workspace file writes require file.write to be allowed by the server.");
   const runId = requireSafeName(segments[3], "runId");
   try {
-    await writeWorkspaceFile(req, res, await runWorkspaceContext(url, workspaceRoot, tenant, runId), { kind: "run", runId }, options, activeWorkspaces, appendAuditEvent, access, presence);
+    await writeWorkspaceFile(req, res, await runWorkspaceContext(url, workspaceRoot, tenant, runId, options), { kind: "run", runId }, options, activeWorkspaces, appendAuditEvent, access, presence);
     return true;
   } catch (error) {
     if (isNotFound(error)) {
@@ -10116,7 +10094,7 @@ async function handleMoveRunWorkspaceFile(
   await requireTenantTool(options, tenant, "file.write", "workspace file moves require file.write to be allowed by the server.");
   const runId = requireSafeName(segments[3], "runId");
   try {
-    await moveWorkspaceFile(req, res, await runWorkspaceContext(url, workspaceRoot, tenant, runId), { kind: "run", runId }, options, activeWorkspaces, appendAuditEvent, access, presence);
+    await moveWorkspaceFile(req, res, await runWorkspaceContext(url, workspaceRoot, tenant, runId, options), { kind: "run", runId }, options, activeWorkspaces, appendAuditEvent, access, presence);
     return true;
   } catch (error) {
     if (isNotFound(error)) {
@@ -10234,7 +10212,7 @@ async function handleDeleteRunWorkspaceFile(
   await requireTenantTool(options, tenant, "file.write", "workspace file deletes require file.write to be allowed by the server.");
   const runId = requireSafeName(segments[3], "runId");
   try {
-    await deleteWorkspaceFile(url, req, res, await runWorkspaceContext(url, workspaceRoot, tenant, runId), { kind: "run", runId }, options, activeWorkspaces, appendAuditEvent, access, presence);
+    await deleteWorkspaceFile(url, req, res, await runWorkspaceContext(url, workspaceRoot, tenant, runId, options), { kind: "run", runId }, options, activeWorkspaces, appendAuditEvent, access, presence);
     return true;
   } catch (error) {
     if (isNotFound(error)) {
@@ -10473,7 +10451,7 @@ async function handleReadRunWorkspaceInfo(
   await requireTenantAccess(req, tenant, options, url);
   const runId = requireSafeName(segments[3], "runId");
   try {
-    writeJson(res, 200, await workspaceInfo(await runWorkspaceContext(url, workspaceRoot, tenant, runId), { kind: "run", runId }, options));
+    writeJson(res, 200, await workspaceInfo(await runWorkspaceContext(url, workspaceRoot, tenant, runId, options), { kind: "run", runId }, options));
     return true;
   } catch (error) {
     if (isNotFound(error)) {
@@ -10520,7 +10498,7 @@ async function handleReadRunWorkspaceDiff(
   await requireTenantTool(options, tenant, "git.diff", "workspace diffs require git.diff to be allowed by the server.");
   const runId = requireSafeName(segments[3], "runId");
   try {
-    writeJson(res, 200, await workspaceDiff(await runWorkspaceContext(url, workspaceRoot, tenant, runId), options));
+    writeJson(res, 200, await workspaceDiff(await runWorkspaceContext(url, workspaceRoot, tenant, runId, options), options));
     return true;
   } catch (error) {
     if (isNotFound(error)) {
@@ -10660,7 +10638,7 @@ async function handleReadRunWorkspaceFile(
   await requireTenantTool(options, tenant, "file.read", "workspace file reads require file.read to be allowed by the server.");
   const runId = requireSafeName(segments[3], "runId");
   try {
-    await readWorkspaceFile(url, res, await runWorkspaceContext(url, workspaceRoot, tenant, runId), options);
+    await readWorkspaceFile(url, res, await runWorkspaceContext(url, workspaceRoot, tenant, runId, options), options);
     return true;
   } catch (error) {
     if (isNotFound(error)) {
@@ -10829,7 +10807,7 @@ async function handleProvisionAgentGitServiceProjectAgent(
     ? undefined
     : agentGitServiceProvisioningControlPlaneIdentity(controlPlaneIdentityRequest, result.receipt.agentLogin);
   if (controlPlaneIdentity) {
-    const { policy, policyChange } = await upsertTenantControlPlaneIdentity(workspaceRoot, tenant, controlPlaneIdentity);
+    const { policy, policyChange } = await upsertTenantControlPlaneIdentity(workspaceRoot, tenant, controlPlaneIdentity, options);
     if (policyChange) {
       await appendAuditEvent(tenant, "tenant_policy_updated", compactObject({
         ...tenantPolicyAuditData(policy),
@@ -10953,8 +10931,9 @@ async function upsertTenantControlPlaneIdentity(
   workspaceRoot: string,
   tenant: string,
   identity: TenantControlPlaneIdentity,
+  options: HarnessServerOptions,
 ): Promise<{ policy: TenantPolicy; policyChange?: TenantPolicyChange }> {
-  const existing = await readTenantPolicy(workspaceRoot, tenant);
+  const existing = await readTenantPolicy(workspaceRoot, tenant, options);
   const current = existing?.controlPlaneIdentities ?? [];
   const controlPlaneIdentities: TenantControlPlaneIdentity[] = [];
   let replaced = false;
@@ -10973,7 +10952,7 @@ async function upsertTenantControlPlaneIdentity(
     controlPlaneIdentities,
   });
   const policyChange = tenantPolicyReplacementChange(existing, policy);
-  if (policyChange) await writeTenantPolicy(workspaceRoot, tenant, policy);
+  if (policyChange) await writeTenantPolicy(workspaceRoot, tenant, policy, options);
   return { policy, policyChange };
 }
 
@@ -11260,8 +11239,8 @@ async function readTenantProjectSummariesWithActivity(
 ): Promise<ProjectSummary[]> {
   const tenantRoot = join(workspaceRoot, tenant);
   const projectNames = await listTenantProjectNames(workspaceRoot, tenant);
-  const tenantAuditEvents = await readTenantAuditEvents(workspaceRoot, tenant);
-  const policyLimits = (await readTenantPolicy(workspaceRoot, tenant))?.limits;
+  const tenantAuditEvents = await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events);
+  const policyLimits = (await readTenantPolicy(workspaceRoot, tenant, options))?.limits;
   const activeRunDetails = await statusActiveRunDetails(workspaceRoot, options, activeRunSlots, tenant);
   const projects = await Promise.all(
     projectNames.map((project) => readProjectSummaryWithActivity(workspaceRoot, options, tenantRoot, tenant, project, activeRunDetails, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence, tenantAuditEvents, policyLimits)),
@@ -11571,15 +11550,15 @@ async function tenantControlPlaneBackupManifest(
   tenant: string,
   options: HarnessServerOptions,
 ): Promise<TenantControlPlaneBackupManifest> {
-  const policy = await readTenantPolicy(workspaceRoot, tenant);
-  const auditEvents = await readTenantAuditEvents(workspaceRoot, tenant);
+  const policy = await readTenantPolicy(workspaceRoot, tenant, options);
+  const auditEvents = await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events);
   const lastAudit = auditEvents[auditEvents.length - 1];
   const projectNames = await listTenantProjectNames(workspaceRoot, tenant);
   const tenantRoot = join(workspaceRoot, tenant);
   const projects = await Promise.all(projectNames.map(async (project) => ({
     project,
     summary: await readProjectSummary(tenantRoot, tenant, project, policy?.limits),
-    runs: await tenantControlPlaneBackupRuns(workspaceRoot, tenant, project),
+    runs: await tenantControlPlaneBackupRuns(workspaceRoot, tenant, project, options),
   })));
   projects.sort((a, b) => a.project.localeCompare(b.project));
   return {
@@ -11604,9 +11583,10 @@ async function tenantControlPlaneBackupRuns(
   workspaceRoot: string,
   tenant: string,
   project: string,
+  options: HarnessServerOptions,
 ): Promise<TenantControlPlaneBackupRun[]> {
   try {
-    const states = await readRunStatesForListing(join(workspaceRoot, tenant, project, ".loom", "runs"), tenant, project);
+    const states = await readRunStatesForListing(join(workspaceRoot, tenant, project, ".loom", "runs"), tenant, project, options);
     states.sort((a, b) => startedAt(b).localeCompare(startedAt(a)));
     return states.map((state) => compactObject({
       runId: state.runId,
@@ -11819,7 +11799,7 @@ async function handleReadProject(
   const tenant = requireSafeName(segments[1], "tenant");
   await requireTenantAccess(req, tenant, options, url);
   const project = requireProjectName(segments[3], "project");
-  writeJson(res, 200, await readProjectDetail(workspaceRoot, options, tenant, project, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence, await readTenantAuditEvents(workspaceRoot, tenant)));
+  writeJson(res, 200, await readProjectDetail(workspaceRoot, options, tenant, project, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, projectPresence, runPresence, await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events)));
   return true;
 }
 
@@ -11944,7 +11924,7 @@ async function handleReadVasLiteCaseReviewPackage(
   await requireVasLiteProject(workspaceRoot, tenant, project, "vas-lite review packages require a vas-lite project template.");
   const record = await readVasLiteCase(projectRoot, caseId);
   const sourceDefaults = await readProjectSourceDefaults(tenantRoot, project);
-  const auditTrail = vasLiteCaseTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant), project, caseId);
+  const auditTrail = vasLiteCaseTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events), project, caseId);
   const response = await vasLiteCaseReviewPackage(projectRoot, tenant, project, caseId, record, sourceDefaults, auditTrail);
   writeJson(res, 200, response);
   return true;
@@ -12434,7 +12414,7 @@ async function handleListRuns(
   const runsRoot = join(workspaceRoot, tenant, project, ".loom", "runs");
 
   try {
-    const states = await readRunStatesForListing(runsRoot, tenant, project);
+    const states = await readRunStatesForListing(runsRoot, tenant, project, options);
     states.sort((a, b) => startedAt(b).localeCompare(startedAt(a)));
     writeJson(res, 200, await runStatesForReadResponse(states, workspaceRoot, options, activeRunSlots, activeWorkspaces, queuedRuns));
     return true;
@@ -12514,7 +12494,7 @@ async function handleCreateRun(
     : undefined;
   let runCreateRequestRecordOwned = false;
   if (runCreateRequestRecord) {
-    const claim = await claimRunCreateRequestRecord(runRoot, runCreateRequestRecord);
+    const claim = await claimRunCreateRequestRecord(runRoot, runCreateRequestRecord, options);
     if (!claim.created) {
       writeJson(res, claim.replay.statusCode, claim.replay.body);
       return;
@@ -12523,7 +12503,7 @@ async function handleCreateRun(
     runCreateRequestRecordOwned = true;
   }
   const releaseRunCreateRequestRecord = async () => {
-    if (runCreateRequestRecordOwned) await deleteRunCreateRequestRecord(runRoot, runCreateRequestRecord);
+    if (runCreateRequestRecordOwned) await deleteRunCreateRequestRecord(runRoot, runCreateRequestRecord, options);
   };
   const metadata = runMetadata({ tenant, project, runId, repo, branch, baseBranch, issue, runPreset: preset, runPresetInput: presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, ...runAgentMetadata(gatedBody, options) }, options);
   const initialIssueComments = await initialIssueCommentEventsForRun(
@@ -12564,8 +12544,8 @@ async function handleCreateRun(
   const activeRunId = activeWorkspaces.get(workspaceKey);
     if (activeRunId) {
       if (queueRequested) {
-        const status = await queueAsyncRun({ queuedRuns, appendAuditEvent, run, admission: queuedAdmissionProjectActiveWorkspace(activeRunId), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: initialIssueComments.events, snapshotBody, syncIssueComments, issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
-      await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord);
+        const status = await queueAsyncRun({ options, queuedRuns, appendAuditEvent, run, admission: queuedAdmissionProjectActiveWorkspace(activeRunId), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: initialIssueComments.events, snapshotBody, syncIssueComments, issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
+      await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord, options);
       writeJson(res, 202, status);
       return;
     }
@@ -12575,8 +12555,8 @@ async function handleCreateRun(
 	  const persistedRunId = await findBlockingPersistedRunningRun(options, runRoot);
   if (persistedRunId) {
     if (queueRequested) {
-      const status = await queueAsyncRun({ queuedRuns, appendAuditEvent, run, admission: queuedAdmissionPersistedRunningRun(persistedRunId), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: initialIssueComments.events, snapshotBody, syncIssueComments, issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
-      await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord);
+      const status = await queueAsyncRun({ options, queuedRuns, appendAuditEvent, run, admission: queuedAdmissionPersistedRunningRun(persistedRunId), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: initialIssueComments.events, snapshotBody, syncIssueComments, issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
+      await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord, options);
       writeJson(res, 202, status);
       return;
     }
@@ -12587,8 +12567,8 @@ async function handleCreateRun(
   const tenantRunIds = tenantRunLimit !== undefined ? activeTenantRunIds(activeRunSlots, tenant) : [];
   if (tenantRunLimit !== undefined && tenantRunIds.length >= tenantRunLimit) {
     if (queueRequested) {
-      const status = await queueAsyncRun({ queuedRuns, appendAuditEvent, run, admission: queuedAdmissionTenantActiveRunLimit(tenantRunIds, tenantRunLimit), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: initialIssueComments.events, snapshotBody, syncIssueComments, issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
-      await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord);
+      const status = await queueAsyncRun({ options, queuedRuns, appendAuditEvent, run, admission: queuedAdmissionTenantActiveRunLimit(tenantRunIds, tenantRunLimit), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: initialIssueComments.events, snapshotBody, syncIssueComments, issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
+      await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord, options);
       writeJson(res, 202, status);
       return;
     }
@@ -12599,8 +12579,8 @@ async function handleCreateRun(
   const admissionClaim = await tryAcquireActiveRunAdmission(options, run, tenantRunLimit);
   if (!admissionClaim.ok) {
     if (queueRequested) {
-      const status = await queueAsyncRun({ queuedRuns, appendAuditEvent, run, admission: admissionClaim.admission, statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: initialIssueComments.events, snapshotBody, syncIssueComments, issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
-      await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord);
+      const status = await queueAsyncRun({ options, queuedRuns, appendAuditEvent, run, admission: admissionClaim.admission, statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: initialIssueComments.events, snapshotBody, syncIssueComments, issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
+      await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord, options);
       writeJson(res, 202, status);
       return;
     }
@@ -12612,8 +12592,8 @@ async function handleCreateRun(
     let claimOwnedByRun = false;
     try {
       await mkdir(runDir, { recursive: true });
-      await appendInitialRunEvents(runDir, initialIssueComments.events);
-      await writeQueuedRunSnapshot(runDir, snapshotBody, requester);
+      await appendInitialRunEvents(runDir, initialIssueComments.events, options);
+      await writeQueuedRunSnapshot(runDir, snapshotBody, requester, options);
       const status = await startAsyncRun(run, options, activeRuns, activeRunSlots, activeWorkspaces, scheduleQueuedRuns, appendAuditEvent, admissionClaim.handle);
       claimOwnedByRun = true;
     await appendAuditEvent(tenant, "run_created", compactObject({
@@ -12633,7 +12613,7 @@ async function handleCreateRun(
     if (syncIssueComments && issue) {
       await appendInitialIssueCommentSyncAuditEvent(appendAuditEvent, tenant, access, project, runId, issue, metadata.issueUrl, initialIssueComments, clientId, preset, presetInput);
     }
-    await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord);
+    await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord, options);
     writeJson(res, 202, status);
     return;
     } catch (error) {
@@ -12646,11 +12626,14 @@ async function handleCreateRun(
 
   activeWorkspaces.set(workspaceKey, runId);
   activeRunSlots.set(runKey, { tenant, project, runId });
-  const stopAdmissionHeartbeat = startRunAdmissionClaimHeartbeat(options, admissionClaim.handle);
+  const admissionController = new AbortController();
+  const stopAdmissionHeartbeat = startRunAdmissionClaimHeartbeat(options, admissionClaim.handle, (error) => {
+    admissionController.abort(runAdmissionHeartbeatError(error));
+  });
   try {
     await mkdir(cwd, { recursive: true });
     await mkdir(runDir, { recursive: true });
-    await appendInitialRunEvents(runDir, initialIssueComments.events);
+    await appendInitialRunEvents(runDir, initialIssueComments.events, options);
     const executor = await workspaceExecutor(options, { tenant, project, runId, cwd, repo, branch, baseBranch });
 
     const summary = await runHarness({
@@ -12670,6 +12653,8 @@ async function handleCreateRun(
       reviewRequired,
       deploymentRequired,
       requester,
+      signal: admissionController.signal,
+      stateBackend: options.stateBackend,
     });
     const reported = await finalizeRun(options, summary, pullRequest, appendAuditEvent);
 
@@ -12690,7 +12675,7 @@ async function handleCreateRun(
     if (syncIssueComments && issue) {
       await appendInitialIssueCommentSyncAuditEvent(appendAuditEvent, tenant, access, project, runId, issue, metadata.issueUrl, initialIssueComments, clientId, preset, presetInput);
     }
-    await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord);
+    await writeRunCreateRequestRecord(runRoot, runCreateRequestRecord, options);
     writeJson(res, 201, reported);
   } finally {
     stopAdmissionHeartbeat();
@@ -12782,14 +12767,14 @@ async function createAsyncRunFromBody(
   const activeRunId = activeWorkspaces.get(workspaceKey);
   if (activeRunId) {
     if (queueRequested) {
-      return queueAsyncRun({ queuedRuns, appendAuditEvent, run, admission: queuedAdmissionProjectActiveWorkspace(activeRunId), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: runInitialEvents, snapshotBody, syncIssueComments, issue: runSource.issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
+      return queueAsyncRun({ options, queuedRuns, appendAuditEvent, run, admission: queuedAdmissionProjectActiveWorkspace(activeRunId), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: runInitialEvents, snapshotBody, syncIssueComments, issue: runSource.issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
     }
     throw conflict(`tenant project already has an active run: ${activeRunId}`);
   }
 	  const persistedRunId = await findBlockingPersistedRunningRun(options, runRoot);
   if (persistedRunId) {
     if (queueRequested) {
-      return queueAsyncRun({ queuedRuns, appendAuditEvent, run, admission: queuedAdmissionPersistedRunningRun(persistedRunId), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: runInitialEvents, snapshotBody, syncIssueComments, issue: runSource.issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
+      return queueAsyncRun({ options, queuedRuns, appendAuditEvent, run, admission: queuedAdmissionPersistedRunningRun(persistedRunId), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: runInitialEvents, snapshotBody, syncIssueComments, issue: runSource.issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
     }
     throw conflict(`tenant project already has an active run: ${persistedRunId}`);
   }
@@ -12797,19 +12782,19 @@ async function createAsyncRunFromBody(
   const tenantRunIds = tenantRunLimit !== undefined ? activeTenantRunIds(activeRunSlots, tenant) : [];
   if (tenantRunLimit !== undefined && tenantRunIds.length >= tenantRunLimit) {
     if (!queueRequested) throw conflict("active run tenant limit reached");
-    return queueAsyncRun({ queuedRuns, appendAuditEvent, run, admission: queuedAdmissionTenantActiveRunLimit(tenantRunIds, tenantRunLimit), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: runInitialEvents, snapshotBody, syncIssueComments, issue: runSource.issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
+    return queueAsyncRun({ options, queuedRuns, appendAuditEvent, run, admission: queuedAdmissionTenantActiveRunLimit(tenantRunIds, tenantRunLimit), statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: runInitialEvents, snapshotBody, syncIssueComments, issue: runSource.issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
   }
 
   const admissionClaim = await tryAcquireActiveRunAdmission(options, run, tenantRunLimit);
   if (!admissionClaim.ok) {
     if (!queueRequested) throw admissionClaim.error;
-    return queueAsyncRun({ queuedRuns, appendAuditEvent, run, admission: admissionClaim.admission, statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: runInitialEvents, snapshotBody, syncIssueComments, issue: runSource.issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
+    return queueAsyncRun({ options, queuedRuns, appendAuditEvent, run, admission: admissionClaim.admission, statusInput: { tenant, project, runId, goal, metadata, requester, runDir }, runDir, initialEvents: runInitialEvents, snapshotBody, syncIssueComments, issue: runSource.issue, issueUrl: metadata.issueUrl, initialIssueComments, preset, presetInput, projectRunPolicy: projectRunPolicy.evidence, projectContract, projectContractStatus, clientId, access });
   }
   let claimOwnedByRun = false;
   try {
     await mkdir(runDir, { recursive: true });
-    await appendInitialRunEvents(runDir, runInitialEvents);
-    await writeQueuedRunSnapshot(runDir, snapshotBody, requester);
+    await appendInitialRunEvents(runDir, runInitialEvents, options);
+    await writeQueuedRunSnapshot(runDir, snapshotBody, requester, options);
     const status = await startAsyncRun(run, options, activeRuns, activeRunSlots, activeWorkspaces, scheduleQueuedRuns, appendAuditEvent, admissionClaim.handle);
     claimOwnedByRun = true;
     await appendAuditEvent(tenant, "run_created", compactObject({
@@ -12839,6 +12824,7 @@ async function createAsyncRunFromBody(
 }
 
 async function queueAsyncRun(input: {
+  options: HarnessServerOptions;
   queuedRuns: QueuedRun[];
   appendAuditEvent: TenantAuditAppender;
   run: HarnessRunStart;
@@ -12883,9 +12869,10 @@ async function queueAsyncRun(input: {
     runDir,
   };
   await mkdir(input.runDir, { recursive: true });
-  await appendInitialRunEvents(input.runDir, input.initialEvents);
-  await writeQueuedRunSnapshot(input.runDir, input.snapshotBody, requester);
-  await writeRunStatus(input.runDir, status);
+  await appendInitialRunEvents(input.runDir, input.initialEvents, input.options);
+  const snapshot = await writeQueuedRunSnapshot(input.runDir, input.snapshotBody, requester, input.options);
+  await writeRunStatus(input.runDir, status, input.options);
+  await input.options.stateBackend?.queues.enqueue<DistributedQueuedRunEnvelope>(DISTRIBUTED_RUN_QUEUE, runId, { status, snapshot });
   input.queuedRuns.push({ ...input.run, status, access: input.access });
   await input.appendAuditEvent(tenant, "run_created", compactObject({
     project,
@@ -12923,9 +12910,9 @@ function queuedAdmissionAuditData(admission: QueuedRunAdmission): Record<string,
   });
 }
 
-async function appendInitialRunEvents(runDir: string, events: InitialRunEvent[]): Promise<void> {
+async function appendInitialRunEvents(runDir: string, events: InitialRunEvent[], options: HarnessServerOptions): Promise<void> {
   for (const event of events) {
-    await appendRunEvent(runDir, event.type, event.data);
+    await appendRunEvent(runDir, event.type, event.data, options.stateBackend?.events);
   }
 }
 
@@ -13900,6 +13887,7 @@ async function drainQueuedRuns(
   scheduleQueuedRuns: () => void,
   appendAuditEvent: TenantAuditAppender,
 ): Promise<void> {
+  await syncDistributedQueuedRuns(resolve(options.workspaceRoot), options, queuedRuns);
   for (let index = 0; index < queuedRuns.length;) {
     const run = queuedRuns[index];
     const tenantRunLimit = await effectiveTenantActiveRunLimit(options, run.tenant);
@@ -13907,25 +13895,43 @@ async function drainQueuedRuns(
       index += 1;
       continue;
     }
-	    if (activeWorkspaces.has(activeRunWorkspaceKey(options, run.tenant, run.project, run.runId))) {
-	      index += 1;
-	      continue;
-	    }
-	    if (await findBlockingPersistedRunningRun(options, run.runRoot)) {
-	      index += 1;
-	      continue;
-	    }
+    if (activeWorkspaces.has(activeRunWorkspaceKey(options, run.tenant, run.project, run.runId))) {
+      index += 1;
+      continue;
+    }
+    if (await findBlockingPersistedRunningRun(options, run.runRoot)) {
+      index += 1;
+      continue;
+    }
     const admissionClaim = await tryAcquireActiveRunAdmission(options, run, tenantRunLimit);
     if (!admissionClaim.ok) {
       index += 1;
       continue;
     }
 
+    const queueOwner = distributedRunQueueOwner(options);
+    const queueClaim = options.stateBackend
+      ? await options.stateBackend.queues.claim<DistributedQueuedRunEnvelope>(
+          DISTRIBUTED_RUN_QUEUE,
+          run.runId,
+          queueOwner,
+          DISTRIBUTED_RUN_QUEUE_CLAIM_TTL_MS,
+        )
+      : undefined;
+    if (options.stateBackend && !queueClaim) {
+      await admissionClaim.handle.release();
+      queuedRuns.splice(index, 1);
+      continue;
+    }
+
     const queuePositions = queuedRunPositions(queuedRuns, run);
     queuedRuns.splice(index, 1);
     try {
-      await enforceModelUsageTokenLimitsForRun(resolve(options.workspaceRoot), run);
+      await enforceModelUsageTokenLimitsForRun(resolve(options.workspaceRoot), options, run);
       const status = await startAsyncRun(run, options, activeRuns, activeRunSlots, activeWorkspaces, scheduleQueuedRuns, appendAuditEvent, admissionClaim.handle);
+      if (options.stateBackend) {
+        await options.stateBackend.queues.acknowledge(DISTRIBUTED_RUN_QUEUE, run.runId, queueOwner).catch(() => false);
+      }
       await appendAuditEvent(run.tenant, "run_started", compactObject({
         project: run.project,
         runId: run.runId,
@@ -13940,7 +13946,10 @@ async function drainQueuedRuns(
       }), run.access);
     } catch (error) {
       await admissionClaim.handle.release();
-      await failQueuedRun(run, error);
+      await failQueuedRun(options, run, error);
+      if (options.stateBackend) {
+        await options.stateBackend.queues.acknowledge(DISTRIBUTED_RUN_QUEUE, run.runId, queueOwner).catch(() => false);
+      }
     }
   }
 }
@@ -13952,6 +13961,10 @@ async function recoverQueuedRuns(
   audit: QueueRecoveryAudit,
   appendAuditEvent: TenantAuditAppender,
 ): Promise<void> {
+  if (options.stateBackend) {
+    await syncDistributedQueuedRuns(workspaceRoot, options, queuedRuns, audit);
+    return;
+  }
   const runDirs = await listPersistedRunDirs(workspaceRoot);
   for (const runDir of runDirs) {
     const state = await readRunStateForScan(runDir);
@@ -13980,7 +13993,7 @@ async function recoverQueuedRuns(
       const recoveryError = queueRecoveryError(state, error);
       audit.failedQueuedRuns += 1;
       audit.errors.push(recoveryError);
-      await failQueuedStatus(state, error);
+      await failQueuedStatus(options, state, error);
       await appendAuditEvent(state.tenant, "queued_run_recovery_failed", compactObject({
         project: state.project,
         runId: state.runId,
@@ -13992,6 +14005,73 @@ async function recoverQueuedRuns(
       }), { actor: "system", role: "admin" });
     }
   }
+}
+
+async function syncDistributedQueuedRuns(
+  workspaceRoot: string,
+  options: HarnessServerOptions,
+  queuedRuns: QueuedRun[],
+  audit?: QueueRecoveryAudit,
+): Promise<void> {
+  const backend = options.stateBackend;
+  if (!backend) return;
+  const items = await backend.queues.list<DistributedQueuedRunEnvelope>(DISTRIBUTED_RUN_QUEUE);
+  const queuedIds = new Set(items.map((item) => item.id));
+  for (let index = queuedRuns.length - 1; index >= 0; index -= 1) {
+    if (!queuedIds.has(queuedRuns[index].runId)) queuedRuns.splice(index, 1);
+  }
+  if (audit) audit.scannedQueuedRuns += items.length;
+
+  for (const item of items) {
+    if (queuedRuns.some((run) => run.runId === item.id)) continue;
+    const envelope = distributedQueuedRunEnvelope(item.value, item.id);
+    if (!envelope) {
+      if (audit) {
+        audit.failedQueuedRuns += 1;
+        audit.errors.push({ runId: item.id, message: "invalid distributed queued run envelope" });
+      }
+      continue;
+    }
+
+    const persisted = await readRunStateIfPresent(envelope.status.runDir, options);
+    if (persisted && persisted.status !== "queued") {
+      await acknowledgeStaleDistributedQueueItem(options, item.id);
+      continue;
+    }
+
+    try {
+      const recovered = await queuedRunFromSnapshot(workspaceRoot, options, envelope.status, envelope.snapshot);
+      queuedRuns.push(recovered);
+      if (audit) audit.recoveredQueuedRuns += 1;
+    } catch (error) {
+      if (audit) {
+        audit.failedQueuedRuns += 1;
+        audit.errors.push(queueRecoveryError(envelope.status, error));
+      }
+    }
+  }
+}
+
+async function acknowledgeStaleDistributedQueueItem(options: HarnessServerOptions, runId: string): Promise<void> {
+  const backend = options.stateBackend;
+  if (!backend) return;
+  const owner = distributedRunQueueOwner(options);
+  const claimed = await backend.queues.claim(DISTRIBUTED_RUN_QUEUE, runId, owner, DISTRIBUTED_RUN_QUEUE_CLAIM_TTL_MS);
+  if (claimed) await backend.queues.acknowledge(DISTRIBUTED_RUN_QUEUE, runId, owner);
+}
+
+function distributedQueuedRunEnvelope(value: unknown, id: string): DistributedQueuedRunEnvelope | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const envelope = value as Partial<DistributedQueuedRunEnvelope>;
+  const status = envelope.status;
+  const snapshot = envelope.snapshot;
+  if (!status || status.status !== "queued" || status.runId !== id) return undefined;
+  if (!snapshot || snapshot.schemaVersion !== 1 || typeof snapshot.request !== "object" || snapshot.request === null) return undefined;
+  return envelope as DistributedQueuedRunEnvelope;
+}
+
+function distributedRunQueueOwner(options: HarnessServerOptions): string {
+  return `server:${options.instanceId ?? process.pid}`;
 }
 
 async function cleanupStaleRunningRuns(
@@ -14017,7 +14097,7 @@ async function cleanupStaleRunningRuns(
       continue;
     }
     try {
-      await abandonRunningStatus(state, runDir, "auto-abandoned stale run lease", true);
+      await abandonRunningStatus(options, state, runDir, "auto-abandoned stale run lease", true);
       await appendAuditEvent(state.tenant, "stale_run_auto_abandoned", {
         project: state.project,
         runId: state.runId,
@@ -14108,7 +14188,7 @@ async function queuedRunFromSnapshot(
   workspaceRoot: string,
   options: HarnessServerOptions,
   status: QueuedRunStatus,
-  snapshot: QueuedRunSnapshot,
+  snapshot: HarnessQueuedRunSnapshot,
 ): Promise<QueuedRun> {
   const body = snapshot.request;
   if (body.async !== true || !booleanFlag(body.queue, "queue")) {
@@ -14131,7 +14211,7 @@ async function harnessRunStartFromSnapshot(
   workspaceRoot: string,
   options: HarnessServerOptions,
   status: { runId: string; tenant: string; project: string; goal: string; runDir: string; metadata?: RunMetadata },
-  snapshot: QueuedRunSnapshot,
+  snapshot: HarnessQueuedRunSnapshot,
 ): Promise<HarnessRunStart> {
   const body = snapshot.request;
   const tenant = requireSafeName(body.tenant, "tenant");
@@ -14207,7 +14287,7 @@ async function startAsyncRun(
   admissionClaim: RunAdmissionClaimHandle,
 ): Promise<RunningRunStatus> {
   const runKey = activeRunKey(run.tenant, run.project, run.runId);
-	  const workspaceKey = activeRunWorkspaceKey(options, run.tenant, run.project, run.runId);
+  const workspaceKey = activeRunWorkspaceKey(options, run.tenant, run.project, run.runId);
   activeWorkspaces.set(workspaceKey, run.runId);
   activeRunSlots.set(runKey, { tenant: run.tenant, project: run.project, runId: run.runId });
 
@@ -14233,14 +14313,26 @@ async function startAsyncRun(
     }, options);
     writtenStatus = status;
     await mkdir(run.runDir, { recursive: true });
-    await writeRunStatus(run.runDir, status);
+    await writeRunStatus(run.runDir, status, options);
     let heartbeatStopped = false;
+    let heartbeatBusy = false;
     const heartbeat = setInterval(() => {
-      if (heartbeatStopped) return;
-      status = refreshRunningRunLease(status, options);
-      writtenStatus = status;
-      void writeRunStatus(run.runDir, status).catch(() => undefined);
-      void admissionClaim.refresh().catch(() => undefined);
+      if (heartbeatStopped || heartbeatBusy) return;
+      heartbeatBusy = true;
+      void admissionClaim.refresh()
+        .then(async () => {
+          if (heartbeatStopped) return;
+          const refreshed = refreshRunningRunLease(status, options);
+          await writeRunStatus(run.runDir, refreshed, options);
+          status = refreshed;
+          writtenStatus = refreshed;
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) controller.abort(runAdmissionHeartbeatError(error));
+        })
+        .finally(() => {
+          heartbeatBusy = false;
+        });
     }, runHeartbeatIntervalMs(options));
     heartbeat.unref?.();
     stopHeartbeat = () => {
@@ -14252,11 +14344,11 @@ async function startAsyncRun(
     const controlPolling = setInterval(() => {
       if (controlPollingStopped || controlPollingBusy || controller.signal.aborted) return;
       controlPollingBusy = true;
-      void readRunCancelRequest(run.runDir)
+      void readRunCancelRequest(run.runDir, options)
         .then(async (request) => {
           if (controlPollingStopped || !request || controller.signal.aborted) return;
           remoteCancelRequest = request;
-          await deleteRunCancelRequest(run.runDir).catch(() => undefined);
+          await deleteRunCancelRequest(run.runDir, options).catch(() => undefined);
           controller.abort(new Error(request.reason ?? "run cancelled by user"));
         })
         .catch(() => undefined)
@@ -14299,14 +14391,15 @@ async function startAsyncRun(
       resume: run.resume,
       startedAt: run.startedAt,
       control: {
-        shouldPause: () => readRunPauseRequest(run.runDir),
+        shouldPause: () => readRunPauseRequest(run.runDir, options),
       },
       signal: controller.signal,
+      stateBackend: options.stateBackend,
     }).then(async (summary) => {
       stopHeartbeat();
       stopControlPolling();
       const reported = await finalizeRun(options, summary, run.pullRequest, appendAuditEvent);
-      await writeRunStatus(run.runDir, reported);
+      await writeRunStatus(run.runDir, reported, options);
       await appendRunFinishedAuditEvent(appendAuditEvent, options, run, reported);
       if (reported.status === "cancelled" && remoteCancelRequest) {
         await appendRunCancelledAuditEvent(appendAuditEvent, run, reported, remoteCancelRequest);
@@ -14328,9 +14421,10 @@ async function startAsyncRun(
         eventCount: 0,
         runDir: run.runDir,
         verification: null,
+        error: { message },
       };
-      await writeRunSummary(failed);
-      await writeRunStatus(run.runDir, failed);
+      await writeRunSummary(failed, options);
+      await writeRunStatus(run.runDir, failed, options);
       await appendRunFinishedAuditEvent(appendAuditEvent, options, run, failed);
       throw new Error(message);
     }).finally(async () => {
@@ -14365,8 +14459,8 @@ async function startAsyncRun(
         verification: null,
         error: { message },
       };
-      await writeRunSummary(failed).catch(() => undefined);
-      await writeRunStatus(run.runDir, failed).catch(() => undefined);
+      await writeRunSummary(failed, options).catch(() => undefined);
+      await writeRunStatus(run.runDir, failed, options).catch(() => undefined);
       await appendRunFinishedAuditEvent(appendAuditEvent, options, run, failed).catch(() => undefined);
     }
     throw error;
@@ -14433,7 +14527,7 @@ async function runFinishedModelUsageAuditData(
 ): Promise<Record<string, unknown>> {
   if (!summary.modelUsage) return {};
   const tenantRoot = join(resolve(options.workspaceRoot), run.tenant);
-  const policyLimits = (await readTenantPolicy(resolve(options.workspaceRoot), run.tenant))?.limits;
+  const policyLimits = (await readTenantPolicy(resolve(options.workspaceRoot), run.tenant, options))?.limits;
   const projectSummary = await readProjectSummary(tenantRoot, run.tenant, run.project, policyLimits);
   return compactObject({
     modelUsage: summary.modelUsage,
@@ -14448,13 +14542,13 @@ function queuedRunStatusForAudit(run: HarnessRunStart): QueuedRunStatus | undefi
   return data.status === "queued" && typeof data.queuedAt === "string" ? data as QueuedRunStatus : undefined;
 }
 
-async function failQueuedRun(run: QueuedRun, error: unknown): Promise<void> {
-  await failQueuedStatus(run.status, error);
+async function failQueuedRun(options: HarnessServerOptions, run: QueuedRun, error: unknown): Promise<void> {
+  await failQueuedStatus(options, run.status, error);
 }
 
-async function failQueuedStatus(status: QueuedRunStatus, error: unknown): Promise<void> {
+async function failQueuedStatus(options: HarnessServerOptions, status: QueuedRunStatus, error: unknown): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
-  const event = await appendRunEvent(status.runDir, "error", { message });
+  const event = await appendRunEvent(status.runDir, "error", { message }, options.stateBackend?.events);
   const failed: RunSummary = {
     runId: status.runId,
     goal: status.goal,
@@ -14468,18 +14562,19 @@ async function failQueuedStatus(status: QueuedRunStatus, error: unknown): Promis
     runDir: status.runDir,
     verification: null,
   };
-  await writeRunSummary(failed);
-  await writeRunStatus(status.runDir, failed);
+  await writeRunSummary(failed, options);
+  await writeRunStatus(status.runDir, failed, options);
 }
 
 async function abandonRunningStatus(
+  options: HarnessServerOptions,
   state: RunningRunStatus,
   runDir: string,
   reason: string,
   stale: boolean,
 ): Promise<RunSummary> {
-  await appendRunEvent(runDir, "cancel", compactObject({ reason, abandoned: true, stale: stale ? true : undefined }));
-  const finish = await appendRunEvent(runDir, "finish", { status: "cancelled" });
+  await appendRunEvent(runDir, "cancel", compactObject({ reason, abandoned: true, stale: stale ? true : undefined }), options.stateBackend?.events);
+  const finish = await appendRunEvent(runDir, "finish", { status: "cancelled" }, options.stateBackend?.events);
   const abandoned: RunSummary = {
     runId: state.runId,
     goal: state.goal,
@@ -14493,8 +14588,8 @@ async function abandonRunningStatus(
     runDir,
     verification: null,
   };
-  await writeRunSummary(abandoned);
-  await writeRunStatus(runDir, abandoned);
+  await writeRunSummary(abandoned, options);
+  await writeRunStatus(runDir, abandoned, options);
   return abandoned;
 }
 
@@ -14519,7 +14614,7 @@ async function handleAbandonRun(
   const project = optionalSafeName(url.searchParams.get("project"), "project") ?? "default";
   const staleOnly = segments[4] === "abandon-stale";
   const runDir = join(workspaceRoot, tenant, project, ".loom", "runs", runId);
-  const state = await readRunState(runDir);
+  const state = await readRunState(runDir, options);
   if (state.status !== "running") {
     throw badRequest("run is not running.");
   }
@@ -14536,7 +14631,7 @@ async function handleAbandonRun(
   const body = await readCancelJson(req);
   const reason = optionalString(body.reason, "reason") ?? (staleOnly ? "stale run abandoned by user" : "run abandoned by user");
   const clientId = optionalClientId(body.clientId);
-  const abandoned = await abandonRunningStatus(state, runDir, reason, staleOnly);
+  const abandoned = await abandonRunningStatus(options, state, runDir, reason, staleOnly);
 	  activeWorkspaces.delete(activeRunWorkspaceKey(options, tenant, project, runId));
   await appendAuditEvent(tenant, "run_abandoned", compactObject({
     project,
@@ -14570,7 +14665,7 @@ async function handleCancelRun(
   const runId = requireSafeName(segments[3], "runId");
   const project = optionalSafeName(url.searchParams.get("project"), "project") ?? "default";
   const runDir = join(workspaceRoot, tenant, project, ".loom", "runs", runId);
-  const state = await readRunState(runDir);
+  const state = await readRunState(runDir, options);
   const body = await readCancelJson(req);
   const reason = optionalString(body.reason, "reason") ?? "run cancelled by user";
   const clientId = optionalClientId(body.clientId);
@@ -14582,7 +14677,7 @@ async function handleCancelRun(
       tenantQueuePosition: state.tenantQueuePosition,
       projectQueuePosition: state.projectQueuePosition,
     });
-    const cancelled = await cancelQueuedRun(runDir, tenant, project, runId, state, queuedRuns, reason);
+    const cancelled = await cancelQueuedRun(options, runDir, tenant, project, runId, state, queuedRuns, reason);
     scheduleQueuedRuns();
     await appendAuditEvent(tenant, "run_cancelled", compactObject({
       project,
@@ -14608,7 +14703,7 @@ async function handleCancelRun(
       await writeRunCancelRequest(runDir, {
         reason,
         ...runEventContext(access, clientId),
-      });
+      }, options);
       writeJson(res, 202, {
         status: "running",
         cancelRequested: true,
@@ -14636,6 +14731,7 @@ async function handleCancelRun(
 }
 
 async function cancelQueuedRun(
+  options: HarnessServerOptions,
   runDir: string,
   tenant: string,
   project: string,
@@ -14644,12 +14740,20 @@ async function cancelQueuedRun(
   queuedRuns: QueuedRun[],
   reason: string,
 ): Promise<RunSummary> {
+  const queueOwner = distributedRunQueueOwner(options);
+  const queueClaim = options.stateBackend
+    ? await options.stateBackend.queues.claim(DISTRIBUTED_RUN_QUEUE, runId, queueOwner, DISTRIBUTED_RUN_QUEUE_CLAIM_TTL_MS)
+    : undefined;
+  if (options.stateBackend && !queueClaim) {
+    throw conflict("queued run is being started or cancelled by another server");
+  }
+  try {
   const index = queuedRuns.findIndex((run) => run.tenant === tenant && run.project === project && run.runId === runId);
   if (index >= 0) {
     queuedRuns.splice(index, 1);
   }
-  await appendRunEvent(runDir, "cancel", { reason, queued: true });
-  const finish = await appendRunEvent(runDir, "finish", { status: "cancelled" });
+  await appendRunEvent(runDir, "cancel", { reason, queued: true }, options.stateBackend?.events);
+  const finish = await appendRunEvent(runDir, "finish", { status: "cancelled" }, options.stateBackend?.events);
   const cancelled: RunSummary = {
     runId,
     goal: state.goal,
@@ -14663,9 +14767,18 @@ async function cancelQueuedRun(
     runDir,
     verification: null,
   };
-  await writeRunSummary(cancelled);
-  await writeRunStatus(runDir, cancelled);
+  await writeRunSummary(cancelled, options);
+  await writeRunStatus(runDir, cancelled, options);
+  if (options.stateBackend) {
+    await options.stateBackend.queues.acknowledge(DISTRIBUTED_RUN_QUEUE, runId, queueOwner);
+  }
   return cancelled;
+  } catch (error) {
+    if (options.stateBackend && queueClaim) {
+      await options.stateBackend.queues.release(DISTRIBUTED_RUN_QUEUE, runId, queueOwner).catch(() => false);
+    }
+    throw error;
+  }
 }
 
 async function handleResumeRun(
@@ -14691,7 +14804,7 @@ async function handleResumeRun(
   const runDir = join(workspaceRoot, tenant, project, ".loom", "runs", runId);
   const body = await readRunResumeJson(req);
   const clientId = optionalClientId(body.clientId);
-  const state = await readRunState(runDir);
+  const state = await readRunState(runDir, options);
   const status = await resumePausedRun(
     workspaceRoot,
     options,
@@ -14746,14 +14859,14 @@ async function resumePausedRun(
     throw conflict("active run tenant limit reached");
   }
 
-  const snapshot = await readQueuedRunSnapshot(runDir);
+  const snapshot = await readQueuedRunSnapshot(runDir, options);
   const run = await harnessRunStartFromSnapshot(workspaceRoot, options, { ...state, tenant, project }, snapshot);
   const resumeRequester = runRequester(access, clientId);
-  await enforceModelUsageTokenLimitsForRun(workspaceRoot, run);
+  await enforceModelUsageTokenLimitsForRun(workspaceRoot, options, run);
   const admissionClaim = await tryAcquireActiveRunAdmission(options, run, tenantRunLimit);
   if (!admissionClaim.ok) throw admissionClaim.error;
   let claimOwnedByRun = false;
-  await deleteRunPauseRequest(runDir);
+  await deleteRunPauseRequest(runDir, options);
   const status = await startAsyncRun({
       ...run,
       resumeRequester,
@@ -14802,7 +14915,7 @@ async function handleReviewRun(
   const contractPatch = projectContractPatchFromReviewBody(body);
   const clientId = optionalClientId(body.clientId);
 
-  const summary = await readRunState(runDir);
+  const summary = await readRunState(runDir, options);
   if (summary.status === "running") {
     throw badRequest("cannot review a running run.");
   }
@@ -14854,7 +14967,7 @@ async function decideRunReview(
 ): Promise<RunSummary> {
   if (decision === "rejected") {
     const review: ReviewGate = compactReview({ required: true, status: "rejected", note, contractPatch });
-    const reviewed = await writeReviewedSummary({ ...summary, status: "failed", review }, runDir, review, runEventContext(access, clientId));
+    const reviewed = await writeReviewedSummary(options, { ...summary, status: "failed", review }, runDir, review, runEventContext(access, clientId));
     await appendAuditEvent(tenant, "review_decided", compactObject({
       project,
       runId,
@@ -14888,15 +15001,15 @@ async function decideRunReview(
         issue: reviewed.metadata?.issue,
         issueUrl: reviewed.metadata?.issueUrl,
         pullRequestIndex: reviewed.metadata?.pullRequestIndex,
-      });
+      }, options);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const errorMessage = `merge reporter failed: ${message}`;
-      await recordRunError(summary, errorMessage);
+      await recordRunError(summary, errorMessage, options);
       throw new Error(errorMessage);
     }
   }
-  reviewed = await writeReviewedSummary(reviewed, runDir, review, runEventContext(access, clientId));
+  reviewed = await writeReviewedSummary(options, reviewed, runDir, review, runEventContext(access, clientId));
   await appendAuditEvent(tenant, "review_decided", compactObject({
     project,
     runId,
@@ -14944,7 +15057,7 @@ async function handleClaimRunReview(
   const action = runReviewClaimAction(body.action);
   const clientId = optionalClientId(body.clientId);
 
-  const summary = await readRunState(runDir);
+  const summary = await readRunState(runDir, options);
   if (summary.status === "running") {
     throw badRequest("cannot claim review for a running run.");
   }
@@ -14957,6 +15070,7 @@ async function handleClaimRunReview(
   }
 
   const updated = await claimRunReview(
+    options,
     appendAuditEvent,
     tenant,
     project,
@@ -14973,6 +15087,7 @@ async function handleClaimRunReview(
 }
 
 async function claimRunReview(
+  options: HarnessServerOptions,
   appendAuditEvent: TenantAuditAppender,
   tenant: string,
   project: string,
@@ -14999,10 +15114,10 @@ async function claimRunReview(
     claimedAt: claim?.claimedAt,
     previousClaim,
     ...runEventContext(access, clientId),
-  }));
+  }), options.stateBackend?.events);
   const updated = { ...summary, review: updatedReview, eventCount: event.seq };
-  await writeRunSummary(updated);
-  await writeRunStatus(runDir, updated);
+  await writeRunSummary(updated, options);
+  await writeRunStatus(runDir, updated, options);
   await appendAuditEvent(tenant, "run_review_claimed", compactObject({
     project,
     runId,
@@ -15036,7 +15151,7 @@ async function handleDeploymentRun(
   const decision = reviewDecision(body.decision);
   const note = optionalString(body.note, "note");
   const clientId = optionalClientId(body.clientId);
-  const summary = await readRunState(runDir);
+  const summary = await readRunState(runDir, options);
   if (summary.status === "running") {
     throw badRequest("cannot deploy a running run.");
   }
@@ -15051,6 +15166,7 @@ async function handleDeploymentRun(
   }
 
   const deployed = await decideRunDeployment(
+    options,
     appendAuditEvent,
     tenant,
     project,
@@ -15067,6 +15183,7 @@ async function handleDeploymentRun(
 }
 
 async function decideRunDeployment(
+  options: HarnessServerOptions,
   appendAuditEvent: TenantAuditAppender,
   tenant: string,
   project: string,
@@ -15079,7 +15196,7 @@ async function decideRunDeployment(
   clientId: string | undefined,
 ): Promise<RunSummary> {
   const deployment: DeploymentGate = compactDeployment({ required: true, status: decision, note });
-  const deployed = await writeDeploymentSummary({ ...summary, status: decision === "approved" ? "passed" : "failed", deployment }, runDir, deployment, runEventContext(access, clientId));
+  const deployed = await writeDeploymentSummary(options, { ...summary, status: decision === "approved" ? "passed" : "failed", deployment }, runDir, deployment, runEventContext(access, clientId));
   await appendAuditEvent(tenant, "deployment_decided", compactObject({
     project,
     runId,
@@ -15111,7 +15228,7 @@ async function handleCreateRunComment(
   const runDir = join(workspaceRoot, tenant, project, ".loom", "runs", runId);
 
   try {
-    const state = await readRunState(runDir);
+    const state = await readRunState(runDir, options);
     const body = await readRunCommentJson(req);
     const message = runCommentMessage(body.message);
     const pauseRequested = booleanFlag(body.pause, "pause");
@@ -15131,19 +15248,19 @@ async function handleCreateRunComment(
       content: message,
       pauseRequested: pauseRequested ? true : undefined,
       ...context,
-    }));
+    }), options.stateBackend?.events);
     if (pauseRequested) {
       await writeRunPauseRequest(runDir, {
         reason: message,
         eventSeq: event.seq,
         ...context,
-      });
+      }, options);
     }
 
     if (state.status !== "running" && state.status !== "queued") {
       const observed: RunSummary = { ...state, eventCount: event.seq };
-      await writeRunSummary(observed);
-      await writeRunStatus(runDir, observed);
+      await writeRunSummary(observed, options);
+      await writeRunStatus(runDir, observed, options);
     }
 
     await appendAuditEvent(tenant, "run_comment_added", compactObject({
@@ -15214,6 +15331,7 @@ async function handleGiteaIssueCommentWebhook(
   const controlPlaneIdentity = await issueCommentControlPlaneIdentity(
     workspaceRoot,
     tenant,
+    options,
     webhookRoute.provider,
     parsed.comment.author,
     webhookRoute.actorPrefix,
@@ -15269,7 +15387,7 @@ async function handleGiteaIssueCommentWebhook(
   const linkedVasCaseIds = linkedVasCaseIdsByProject(runs, linkedVasCases);
 
   for (const run of runs) {
-    const result = await syncIssueCommentsIntoRun(run.runDir, run.state, parsed.issue, [parsed.comment], syncContext);
+    const result = await syncIssueCommentsIntoRun(options, run.runDir, run.state, parsed.issue, [parsed.comment], syncContext);
     const runPauseRequested = await requestPauseForIssueCommentCommands(options, tenant, run.project, run.runId, run.runDir, run.state, result.events, activeRuns);
     const runResume = await resumeRunsForIssueCommentCommands(
       workspaceRoot,
@@ -15644,6 +15762,7 @@ function issueCommentWebhookRoute(segments: string[], url: URL, options: Harness
 async function issueCommentControlPlaneIdentity(
   workspaceRoot: string,
   tenant: string,
+  options: HarnessServerOptions,
   provider: string,
   author: string | undefined,
   actorPrefix: string,
@@ -15651,7 +15770,7 @@ async function issueCommentControlPlaneIdentity(
   const externalActor = issueCommentActor(author, actorPrefix);
   const rawAuthor = author?.trim() || undefined;
   if (!externalActor) return {};
-  const policy = await readTenantPolicy(resolve(workspaceRoot), tenant);
+  const policy = await readTenantPolicy(resolve(workspaceRoot), tenant, options);
   const mapped = policy?.controlPlaneIdentities?.find((identity) =>
     identity.provider === provider &&
     (identity.externalActor === externalActor || (rawAuthor !== undefined && identity.externalActor === rawAuthor))
@@ -15689,13 +15808,14 @@ async function handleSyncRunIssueComments(
   }
 
   try {
-    const state = await readRunState(runDir);
+    const state = await readRunState(runDir, options);
     const issue = state.metadata?.issue;
     if (!issue) throw badRequest("run is not linked to an issue.");
     const body = await readIssueCommentSyncJson(req);
     const clientId = optionalClientId(body.clientId);
     const comments = await options.issueCommentReader(issue, { tenant, project, runId });
     const { events, skipped } = await syncIssueCommentsIntoRun(
+      options,
       runDir,
       state,
       issue,
@@ -15920,12 +16040,12 @@ async function handleCreateRunHandoffFollowup(
   const clientId = optionalClientId(body.clientId);
 
   try {
-    const sourceContext = await runWorkspaceContext(url, workspaceRoot, tenant, sourceRunId);
+    const sourceContext = await runWorkspaceContext(url, workspaceRoot, tenant, sourceRunId, options);
     const project = sourceContext.project;
     const sourceRunDir = join(workspaceRoot, tenant, project, ".loom", "runs", sourceRunId);
-    const sourceState = await readRunState(sourceRunDir);
-    const sourceEvents = await readRunEventsIfPresent(sourceRunDir);
-    const sourceAuditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant), project, sourceRunId);
+    const sourceState = await readRunState(sourceRunDir, options);
+    const sourceEvents = await readRunEventsIfPresent(sourceRunDir, options);
+    const sourceAuditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events), project, sourceRunId);
     const sourceFollowupRuns = await runHandoffFollowupRuns(workspaceRoot, tenant, project, sourceRunId, sourceAuditTrail);
     const sourceCheckpoint = runEvidenceCheckpoint(sourceState, sourceEvents, {
       auditTrail: sourceAuditTrail,
@@ -15942,7 +16062,7 @@ async function handleCreateRunHandoffFollowup(
         sourceStatus: sourceState.status,
         clientId,
       }), access);
-      const currentAuditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant), project, sourceRunId);
+      const currentAuditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events), project, sourceRunId);
       const currentFollowupRuns = await runHandoffFollowupRuns(workspaceRoot, tenant, project, sourceRunId, currentAuditTrail);
       writeJson(res, 409, {
         error: "handoff checkpoint changed",
@@ -16085,10 +16205,10 @@ async function handleListRunHandoffFollowups(
   const runId = requireSafeName(segments[3], "runId");
 
   try {
-    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId);
-    const state = await readRunState(join(workspaceRoot, tenant, context.project, ".loom", "runs", runId));
-    const auditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant), context.project, runId);
-    const events = await readRunEventsIfPresent(join(workspaceRoot, tenant, context.project, ".loom", "runs", runId));
+    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId, options);
+    const state = await readRunState(join(workspaceRoot, tenant, context.project, ".loom", "runs", runId), options);
+    const auditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events), context.project, runId);
+    const events = await readRunEventsIfPresent(join(workspaceRoot, tenant, context.project, ".loom", "runs", runId), options);
     const followupRuns = await runHandoffFollowupRuns(workspaceRoot, tenant, context.project, runId, auditTrail);
     writeJson(res, 200, {
       tenant,
@@ -16274,7 +16394,7 @@ async function runPresenceContext(
   const project = optionalSafeName(url.searchParams.get("project"), "project") ?? "default";
   const runDir = join(workspaceRoot, tenant, project, ".loom", "runs", runId);
   try {
-    await readRunState(runDir);
+    await readRunState(runDir, options);
   } catch (error) {
     if (isNotFound(error)) throw notFound("run not found");
     throw error;
@@ -16300,13 +16420,13 @@ async function handleReadRunHandoffPackage(
   const runId = requireSafeName(segments[3], "runId");
 
   try {
-    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId);
+    const context = await runWorkspaceContext(url, workspaceRoot, tenant, runId, options);
     const runDir = join(workspaceRoot, tenant, context.project, ".loom", "runs", runId);
-    const state = await readRunState(runDir);
-    const events = await readRunEventsIfPresent(runDir);
+    const state = await readRunState(runDir, options);
+    const events = await readRunEventsIfPresent(runDir, options);
     const replay = runReplayFromEvents(state, events);
     const diff = await workspaceDiff(context, options);
-    const auditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant), context.project, runId);
+    const auditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events), context.project, runId);
     const followupRuns = await runHandoffFollowupRuns(workspaceRoot, tenant, context.project, runId, auditTrail);
     const body: RunHandoffPackage = {
       tenant,
@@ -16365,9 +16485,9 @@ async function handleReadRunReviewSummary(
   const runDir = join(workspaceRoot, tenant, project, ".loom", "runs", runId);
 
   try {
-    const state = await readRunState(runDir);
-    const replay = runReplayFromEvents(state, await readRunEventsIfPresent(runDir));
-    const diff = await workspaceDiff(await runWorkspaceContext(url, workspaceRoot, tenant, runId), options);
+    const state = await readRunState(runDir, options);
+    const replay = runReplayFromEvents(state, await readRunEventsIfPresent(runDir, options));
+    const diff = await workspaceDiff(await runWorkspaceContext(url, workspaceRoot, tenant, runId, options), options);
     writeJson(res, 200, runReviewSummary(state, replay, diff, tenant, project));
     return true;
   } catch (error) {
@@ -16403,24 +16523,24 @@ async function handleReadRun(
 
   try {
     if (segments[4] === "events" && segments[5] === "stream") {
-      await readRunState(runDir);
-      await streamEvents(res, runDir, seqAfter(url, req));
+      await readRunState(runDir, options);
+      await streamEvents(res, runDir, seqAfter(url, req), options);
       return true;
     }
 
     if (segments[4] === "events") {
-      await readRunState(runDir);
-      writeJson(res, 200, filterEvents(await readRunEventsIfPresent(runDir), seqAfter(url)));
+      await readRunState(runDir, options);
+      writeJson(res, 200, filterEvents(await readRunEventsIfPresent(runDir, options), seqAfter(url)));
       return true;
     }
 
     if (segments[4] === "replay") {
-      const state = await readRunState(runDir);
-      writeJson(res, 200, runReplayFromEvents(state, await readRunEventsIfPresent(runDir)));
+      const state = await readRunState(runDir, options);
+      writeJson(res, 200, runReplayFromEvents(state, await readRunEventsIfPresent(runDir, options)));
       return true;
     }
 
-    const summary = await readRunState(runDir);
+    const summary = await readRunState(runDir, options);
     writeJson(res, 200, await runStateForReadResponse(summary, workspaceRoot, options, activeRunSlots, activeWorkspaces, queuedRuns));
     return true;
   } catch (error) {
@@ -16486,7 +16606,7 @@ async function readProjectDetail(
   tenantAuditEvents: TenantAuditEvent[],
 ): Promise<ProjectDetail> {
   const metadata = await requireProjectMetadata(workspaceRoot, tenant, project);
-  const policyLimits = (await readTenantPolicy(workspaceRoot, tenant))?.limits;
+  const policyLimits = (await readTenantPolicy(workspaceRoot, tenant, options))?.limits;
   const summary = await readProjectSummary(join(workspaceRoot, tenant), tenant, project, policyLimits);
   const fallbackActivityAt = summary.latestStartedAt ?? metadata.createdAt;
   const activitySummary = await readProjectActivitySummary(workspaceRoot, options, tenant, project, fallbackActivityAt, activeSessions, tenantAuditEvents);
@@ -16567,7 +16687,7 @@ async function readProjectSummaryWithAuditActivity(
   const summary = await readProjectSummary(tenantRoot, tenant, project, policyLimits);
   const metadata = await readProjectTemplateMetadata(join(tenantRoot, project), { tenant, project });
   if (!metadata) return summary;
-  const tenantAuditEvents = await readTenantAuditEvents(workspaceRoot, tenant);
+  const tenantAuditEvents = await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events);
   const activitySummary = await readProjectActivitySummary(
     workspaceRoot,
     options,
@@ -17028,7 +17148,12 @@ function projectContractStatusSummary(metadata: ProjectTemplateMetadata | undefi
   return contractStatus ? { contractStatus } : {};
 }
 
-async function readRunStatesForListing(runsRoot: string, tenant: string, project: string): Promise<ReadableRunState[]> {
+async function readRunStatesForListing(runsRoot: string, tenant: string, project: string, options?: HarnessServerOptions): Promise<ReadableRunState[]> {
+  if (options?.stateBackend) {
+    return (await listStoredRunStates(options.stateBackend.documents, tenant)).filter((state) =>
+      state.metadata?.project === project || ("project" in state && state.project === project),
+    );
+  }
   const entries = await readdir(runsRoot, { withFileTypes: true });
   const states = await Promise.all(
     entries
@@ -17458,10 +17583,11 @@ async function runWorkspaceContext(
   workspaceRoot: string,
   tenant: string,
   runId: string,
+  options: HarnessServerOptions,
 ): Promise<HarnessWorkspaceContext> {
   const requestedProject = optionalSafeName(url.searchParams.get("project"), "project") ?? "default";
   const runDir = join(workspaceRoot, tenant, requestedProject, ".loom", "runs", runId);
-  const state = await readRunState(runDir);
+  const state = await readRunState(runDir, options);
   const metadata = state.metadata;
   const project = metadata?.project ?? ("project" in state ? state.project : requestedProject);
   const cwd = join(workspaceRoot, tenant, project);
@@ -17497,32 +17623,24 @@ function workspaceFileRelativePath(rawPath: string, allowRoot: boolean): string 
   return relativePath;
 }
 
-async function readRunState(runDir: string): Promise<RunSummary | RunningRunStatus | QueuedRunStatus> {
-  try {
-    const status = JSON.parse(await readFile(join(runDir, "status.json"), "utf8")) as RunSummary | RunningRunStatus | QueuedRunStatus;
-    if (status.status === "running" || status.status === "queued") return status;
-  } catch (error) {
-    if (!isNotFound(error)) throw error;
-  }
-  try {
-    return JSON.parse(await readFile(join(runDir, "summary.json"), "utf8")) as RunSummary;
-  } catch (error) {
-    if (!isNotFound(error)) throw error;
-    return JSON.parse(await readFile(join(runDir, "status.json"), "utf8")) as RunningRunStatus | QueuedRunStatus;
-  }
+async function readRunState(runDir: string, options?: HarnessServerOptions): Promise<ReadableRunState> {
+  return loadRunState(runDir, options?.stateBackend?.documents);
 }
 
-async function writeRunPauseRequest(runDir: string, request: RunPauseRequest): Promise<void> {
-  await writeJsonFileAtomic(join(runDir, RUN_PAUSE_REQUEST_FILE), {
+async function writeRunPauseRequest(runDir: string, request: RunPauseRequest, options?: HarnessServerOptions): Promise<void> {
+  const value = {
     schemaVersion: 1,
     requestedAt: new Date().toISOString(),
     ...request,
-  });
+  };
+  await options?.stateBackend?.documents.put("run-pause-request", basename(runDir), value);
+  await writeJsonFileAtomic(join(runDir, RUN_PAUSE_REQUEST_FILE), value);
 }
 
-async function readRunPauseRequest(runDir: string): Promise<RunPauseRequest | undefined> {
+async function readRunPauseRequest(runDir: string, options?: HarnessServerOptions): Promise<RunPauseRequest | undefined> {
   try {
-    const data = JSON.parse(await readFile(join(runDir, RUN_PAUSE_REQUEST_FILE), "utf8")) as Record<string, unknown>;
+    const stored = await options?.stateBackend?.documents.get<Record<string, unknown>>("run-pause-request", basename(runDir));
+    const data = stored?.value ?? JSON.parse(await readFile(join(runDir, RUN_PAUSE_REQUEST_FILE), "utf8")) as Record<string, unknown>;
     if (data.schemaVersion !== 1) return undefined;
     return compactObject({
       reason: typeof data.reason === "string" ? data.reason : undefined,
@@ -17537,7 +17655,8 @@ async function readRunPauseRequest(runDir: string): Promise<RunPauseRequest | un
   }
 }
 
-async function deleteRunPauseRequest(runDir: string): Promise<void> {
+async function deleteRunPauseRequest(runDir: string, options?: HarnessServerOptions): Promise<void> {
+  await options?.stateBackend?.documents.delete("run-pause-request", basename(runDir));
   try {
     await unlink(join(runDir, RUN_PAUSE_REQUEST_FILE));
   } catch (error) {
@@ -17545,17 +17664,20 @@ async function deleteRunPauseRequest(runDir: string): Promise<void> {
   }
 }
 
-async function writeRunCancelRequest(runDir: string, request: RunCancelRequest): Promise<void> {
-  await writeJsonFileAtomic(join(runDir, RUN_CANCEL_REQUEST_FILE), {
+async function writeRunCancelRequest(runDir: string, request: RunCancelRequest, options?: HarnessServerOptions): Promise<void> {
+  const value = {
     schemaVersion: 1,
     requestedAt: new Date().toISOString(),
     ...request,
-  });
+  };
+  await options?.stateBackend?.documents.put("run-cancel-request", basename(runDir), value);
+  await writeJsonFileAtomic(join(runDir, RUN_CANCEL_REQUEST_FILE), value);
 }
 
-async function readRunCancelRequest(runDir: string): Promise<RunCancelRequest | undefined> {
+async function readRunCancelRequest(runDir: string, options?: HarnessServerOptions): Promise<RunCancelRequest | undefined> {
   try {
-    const data = JSON.parse(await readFile(join(runDir, RUN_CANCEL_REQUEST_FILE), "utf8")) as Record<string, unknown>;
+    const stored = await options?.stateBackend?.documents.get<Record<string, unknown>>("run-cancel-request", basename(runDir));
+    const data = stored?.value ?? JSON.parse(await readFile(join(runDir, RUN_CANCEL_REQUEST_FILE), "utf8")) as Record<string, unknown>;
     if (data.schemaVersion !== 1) return undefined;
     return compactObject({
       reason: typeof data.reason === "string" ? data.reason : undefined,
@@ -17569,7 +17691,8 @@ async function readRunCancelRequest(runDir: string): Promise<RunCancelRequest | 
   }
 }
 
-async function deleteRunCancelRequest(runDir: string): Promise<void> {
+async function deleteRunCancelRequest(runDir: string, options?: HarnessServerOptions): Promise<void> {
+  await options?.stateBackend?.documents.delete("run-cancel-request", basename(runDir));
   try {
     await unlink(join(runDir, RUN_CANCEL_REQUEST_FILE));
   } catch (error) {
@@ -17598,21 +17721,21 @@ async function deleteRunCancelRequest(runDir: string): Promise<void> {
 	  return findPersistedRunningRun(runRoot);
 	}
 
-async function writeReviewedSummary(summary: RunSummary, runDir: string, review: ReviewGate, context: RunEventContext = {}): Promise<RunSummary> {
-  await appendRunEvent(runDir, "review_gate", compactObject({ ...review, ...context }));
-  const finish = await appendRunEvent(runDir, "finish", compactObject({ status: summary.status, ...context }));
+async function writeReviewedSummary(options: HarnessServerOptions, summary: RunSummary, runDir: string, review: ReviewGate, context: RunEventContext = {}): Promise<RunSummary> {
+  await appendRunEvent(runDir, "review_gate", compactObject({ ...review, ...context }), options.stateBackend?.events);
+  const finish = await appendRunEvent(runDir, "finish", compactObject({ status: summary.status, ...context }), options.stateBackend?.events);
   const reviewed = { ...summary, eventCount: finish.seq };
-  await writeRunSummary(reviewed);
-  await writeRunStatus(runDir, reviewed);
+  await writeRunSummary(reviewed, options);
+  await writeRunStatus(runDir, reviewed, options);
   return reviewed;
 }
 
-async function writeDeploymentSummary(summary: RunSummary, runDir: string, deployment: DeploymentGate, context: RunEventContext = {}): Promise<RunSummary> {
-  await appendRunEvent(runDir, "deployment_gate", compactObject({ ...deployment, ...context }));
-  const finish = await appendRunEvent(runDir, "finish", compactObject({ status: summary.status, ...context }));
+async function writeDeploymentSummary(options: HarnessServerOptions, summary: RunSummary, runDir: string, deployment: DeploymentGate, context: RunEventContext = {}): Promise<RunSummary> {
+  await appendRunEvent(runDir, "deployment_gate", compactObject({ ...deployment, ...context }), options.stateBackend?.events);
+  const finish = await appendRunEvent(runDir, "finish", compactObject({ status: summary.status, ...context }), options.stateBackend?.events);
   const deployed = { ...summary, eventCount: finish.seq };
-  await writeRunSummary(deployed);
-  await writeRunStatus(runDir, deployed);
+  await writeRunSummary(deployed, options);
+  await writeRunStatus(runDir, deployed, options);
   return deployed;
 }
 
@@ -17806,10 +17929,10 @@ async function reportIssue(options: HarnessServerOptions, summary: RunSummary): 
       reviewSummaryUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "review-summary") : undefined,
       handoffPackageUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "handoff-package") : undefined,
       handoffFollowupsUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "handoff-runs") : undefined,
-    });
+    }, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return markRunError(summary, `issue reporter failed: ${message}`);
+    return markRunError(summary, `issue reporter failed: ${message}`, options);
   }
 }
 
@@ -17820,7 +17943,7 @@ async function finalizeRun(
   appendAuditEvent?: TenantAuditAppender,
 ): Promise<RunSummary> {
   const withPullRequest = await reportPullRequest(options, summary, pullRequestRequested);
-  await writeRunSummary(withPullRequest);
+  await writeRunSummary(withPullRequest, options);
   const withIssue = await reportIssue(options, withPullRequest);
   return reportBrainIngest(options, withIssue, appendAuditEvent);
 }
@@ -17856,21 +17979,21 @@ async function reportPullRequest(
       reviewSummaryUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "review-summary") : undefined,
       handoffPackageUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "handoff-package") : undefined,
       handoffFollowupsUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "handoff-runs") : undefined,
-    });
+    }, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return markRunError(summary, `pull request reporter failed: ${message}`);
+    return markRunError(summary, `pull request reporter failed: ${message}`, options);
   }
 }
 
-async function recordRunExternalEffect(summary: RunSummary, data: Record<string, unknown>): Promise<RunSummary> {
+async function recordRunExternalEffect(summary: RunSummary, data: Record<string, unknown>, options: HarnessServerOptions): Promise<RunSummary> {
   const event = await appendRunEvent(summary.runDir, "external_effect", compactObject({
     ...data,
     requester: summary.requester,
-  }));
+  }), options.stateBackend?.events);
   const observed: RunSummary = { ...summary, eventCount: event.seq };
-  await writeRunSummary(observed);
-  await writeRunStatus(summary.runDir, observed);
+  await writeRunSummary(observed, options);
+  await writeRunStatus(summary.runDir, observed, options);
   return observed;
 }
 
@@ -17890,10 +18013,10 @@ async function reportBrainIngest(
       kind: "brain_ingest",
       ...data,
       skills: summary.skills,
-    });
+    }, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return markRunError(summary, `brain ingest failed: ${message}`);
+    return markRunError(summary, `brain ingest failed: ${message}`, options);
   }
 }
 
@@ -17928,8 +18051,8 @@ function brainSignalFailureKind(summary: RunSummary): string | undefined {
   return brainFailureKindForSummary(summary);
 }
 
-async function markRunError(summary: RunSummary, message: string): Promise<RunSummary> {
-  const event = await recordRunError(summary, message);
+async function markRunError(summary: RunSummary, message: string, options: HarnessServerOptions): Promise<RunSummary> {
+  const event = await recordRunError(summary, message, options);
   const failed: RunSummary = {
     ...summary,
     status: "error",
@@ -17937,25 +18060,25 @@ async function markRunError(summary: RunSummary, message: string): Promise<RunSu
     eventCount: event.seq,
     error: { message },
   };
-  await writeRunSummary(failed);
-  await writeRunStatus(summary.runDir, failed);
+  await writeRunSummary(failed, options);
+  await writeRunStatus(summary.runDir, failed, options);
   return failed;
 }
 
-async function recordRunError(summary: RunSummary, message: string): Promise<HarnessEvent> {
-  const event = await appendRunEvent(summary.runDir, "error", { message });
+async function recordRunError(summary: RunSummary, message: string, options: HarnessServerOptions): Promise<HarnessEvent> {
+  const event = await appendRunEvent(summary.runDir, "error", { message }, options.stateBackend?.events);
   const observed = { ...summary, eventCount: event.seq };
-  await writeRunSummary(observed);
-  await writeRunStatus(summary.runDir, observed);
+  await writeRunSummary(observed, options);
+  await writeRunStatus(summary.runDir, observed, options);
   return event;
 }
 
-async function writeRunSummary(summary: RunSummary): Promise<void> {
-  await writeJsonFileAtomic(join(summary.runDir, "summary.json"), summary);
+async function writeRunSummary(summary: RunSummary, options?: HarnessServerOptions): Promise<void> {
+  await persistRunSummary(summary, options?.stateBackend?.documents);
 }
 
-async function writeRunStatus(runDir: string, status: RunningRunStatus | QueuedRunStatus | RunSummary): Promise<void> {
-  await writeJsonFileAtomic(join(runDir, "status.json"), status);
+async function writeRunStatus(runDir: string, status: ReadableRunState, options?: HarnessServerOptions): Promise<void> {
+  await persistRunStatus(runDir, status, options?.stateBackend?.documents);
 }
 
 async function writeJsonFileAtomic(path: string, value: unknown): Promise<void> {
@@ -17964,13 +18087,14 @@ async function writeJsonFileAtomic(path: string, value: unknown): Promise<void> 
   await rename(tempPath, path);
 }
 
-async function writeQueuedRunSnapshot(runDir: string, request: RunRequestBody, requester?: RunRequester): Promise<void> {
-  const snapshot: QueuedRunSnapshot = {
+async function writeQueuedRunSnapshot(runDir: string, request: RunRequestBody, requester?: RunRequester, options?: HarnessServerOptions): Promise<HarnessQueuedRunSnapshot> {
+  const snapshot: HarnessQueuedRunSnapshot = {
     schemaVersion: 1,
     request,
     requester,
   };
-  await writeFile(join(runDir, QUEUED_RUN_REQUEST_FILE), JSON.stringify(snapshot, null, 2) + "\n", "utf8");
+  await persistQueuedRunSnapshot(runDir, snapshot, options?.stateBackend?.documents);
+  return snapshot;
 }
 
 function runCreateRequestHash(request: RunRequestBody, requester?: RunRequester): string {
@@ -18007,17 +18131,26 @@ async function readRunCreateRequestReplay(
   project: string,
   clientRequestId: string,
   requestHash: string,
+  options?: HarnessServerOptions,
   waitForStateMs = 0,
 ): Promise<{ statusCode: number; body: Record<string, unknown> } | undefined> {
   let record: RunCreateRequestRecord | undefined;
-  try {
-    record = runCreateRequestRecordFromUnknown(
-      JSON.parse(await readFile(runCreateRequestPath(runRoot, clientRequestId), "utf8")),
-    );
-  } catch (error) {
-    if (isNotFound(error)) return undefined;
-    if (error instanceof SyntaxError) return undefined;
-    throw error;
+  const stored = await options?.stateBackend?.documents.get<unknown>(
+    "run-create-request",
+    runCreateRequestDocumentKey(tenant, project, clientRequestId),
+  );
+  if (stored) {
+    record = runCreateRequestRecordFromUnknown(stored.value);
+  } else {
+    try {
+      record = runCreateRequestRecordFromUnknown(
+        JSON.parse(await readFile(runCreateRequestPath(runRoot, clientRequestId), "utf8")),
+      );
+    } catch (error) {
+      if (isNotFound(error)) return undefined;
+      if (error instanceof SyntaxError) return undefined;
+      throw error;
+    }
   }
   if (!record) return undefined;
   if (record.tenant !== tenant || record.project !== project || record.clientRequestId !== clientRequestId) return undefined;
@@ -18028,7 +18161,7 @@ async function readRunCreateRequestReplay(
   try {
     for (;;) {
       try {
-        const state = await readRunState(record.runDir);
+        const state = await readRunState(record.runDir, options);
         return {
           statusCode: record.statusCode,
           body: { ...state, idempotentReplay: true },
@@ -18049,12 +18182,38 @@ async function readRunCreateRequestReplay(
 async function claimRunCreateRequestRecord(
   runRoot: string,
   record: RunCreateRequestRecord,
+  options?: HarnessServerOptions,
 ): Promise<
   | { created: true; record: RunCreateRequestRecord }
   | { created: false; replay: { statusCode: number; body: Record<string, unknown> } }
 > {
   await mkdir(runCreateRequestDir(runRoot), { recursive: true });
   const path = runCreateRequestPath(runRoot, record.clientRequestId);
+  if (options?.stateBackend) {
+    try {
+      await options.stateBackend.documents.put(
+        "run-create-request",
+        runCreateRequestDocumentKey(record.tenant, record.project, record.clientRequestId),
+        record,
+        { expectedVersion: 0 },
+      );
+      await writeJsonFileAtomic(path, record);
+      return { created: true, record };
+    } catch (error) {
+      if (!(error instanceof StateConflictError)) throw error;
+      const replay = await readRunCreateRequestReplay(
+        runRoot,
+        record.tenant,
+        record.project,
+        record.clientRequestId,
+        record.requestHash,
+        options,
+        RUN_CREATE_REQUEST_REPLAY_TIMEOUT_MS,
+      );
+      if (!replay) throw conflict("clientRequestId already belongs to a run request that is not readable.");
+      return { created: false, replay };
+    }
+  }
   try {
     const file = await open(path, "wx");
     try {
@@ -18071,6 +18230,7 @@ async function claimRunCreateRequestRecord(
       record.project,
       record.clientRequestId,
       record.requestHash,
+      options,
       RUN_CREATE_REQUEST_REPLAY_TIMEOUT_MS,
     );
     if (!replay) throw conflict("clientRequestId already belongs to a run request that is not readable.");
@@ -18078,14 +18238,26 @@ async function claimRunCreateRequestRecord(
   }
 }
 
-async function writeRunCreateRequestRecord(runRoot: string, record: RunCreateRequestRecord | undefined): Promise<void> {
+async function writeRunCreateRequestRecord(runRoot: string, record: RunCreateRequestRecord | undefined, options?: HarnessServerOptions): Promise<void> {
   if (!record) return;
+  await options?.stateBackend?.documents.put(
+    "run-create-request",
+    runCreateRequestDocumentKey(record.tenant, record.project, record.clientRequestId),
+    record,
+  );
   await mkdir(runCreateRequestDir(runRoot), { recursive: true });
   await writeJsonFileAtomic(runCreateRequestPath(runRoot, record.clientRequestId), record);
 }
 
-async function deleteRunCreateRequestRecord(runRoot: string, record: RunCreateRequestRecord | undefined): Promise<void> {
+async function deleteRunCreateRequestRecord(runRoot: string, record: RunCreateRequestRecord | undefined, options?: HarnessServerOptions): Promise<void> {
   if (!record) return;
+  if (options?.stateBackend) {
+    const key = runCreateRequestDocumentKey(record.tenant, record.project, record.clientRequestId);
+    const current = await options.stateBackend.documents.get<RunCreateRequestRecord>("run-create-request", key);
+    if (current?.value.runId === record.runId && current.value.requestHash === record.requestHash) {
+      await options.stateBackend.documents.delete("run-create-request", key);
+    }
+  }
   const path = runCreateRequestPath(runRoot, record.clientRequestId);
   const current = await readRunCreateRequestRecord(path);
   if (current?.runId !== record.runId || current.requestHash !== record.requestHash) return;
@@ -18129,8 +18301,12 @@ function runCreateRequestPath(runRoot: string, clientRequestId: string): string 
   return join(runCreateRequestDir(runRoot), `${key}.json`);
 }
 
-async function readQueuedRunSnapshot(runDir: string): Promise<QueuedRunSnapshot> {
-  const snapshot = JSON.parse(await readFile(join(runDir, QUEUED_RUN_REQUEST_FILE), "utf8")) as QueuedRunSnapshot;
+function runCreateRequestDocumentKey(tenant: string, project: string, clientRequestId: string): string {
+  return `${tenant}:${project}:${createHash("sha256").update(clientRequestId, "utf8").digest("hex")}`;
+}
+
+async function readQueuedRunSnapshot(runDir: string, options?: HarnessServerOptions): Promise<HarnessQueuedRunSnapshot> {
+  const snapshot = await loadQueuedRunSnapshot<RunRequestBody, RunRequester>(runDir, options?.stateBackend?.documents);
   if (snapshot.schemaVersion !== 1 || typeof snapshot.request !== "object" || snapshot.request === null) {
     throw badRequest("invalid queued run snapshot.");
   }
@@ -19148,6 +19324,7 @@ async function streamTenantAuditEvents(
   tenant: string,
   after: number,
   project?: string,
+  eventStore?: import("./storage/contracts.js").EventStore,
 ): Promise<void> {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -19160,7 +19337,7 @@ async function streamTenantAuditEvents(
   const deadline = Date.now() + 60_000;
 
   while (!res.destroyed && Date.now() < deadline) {
-    const events = filterTenantAuditEvents(await readTenantAuditEvents(workspaceRoot, tenant), lastSeq, 500, project);
+    const events = filterTenantAuditEvents(await readTenantAuditEvents(workspaceRoot, tenant, eventStore), lastSeq, 500, project);
     for (const event of events) {
       lastSeq = Math.max(lastSeq, event.seq);
       res.write(`event: tenant_audit\n`);
@@ -19173,7 +19350,7 @@ async function streamTenantAuditEvents(
   res.end();
 }
 
-async function streamEvents(res: ServerResponse, runDir: string, after: number): Promise<void> {
+async function streamEvents(res: ServerResponse, runDir: string, after: number, options: HarnessServerOptions): Promise<void> {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache",
@@ -19185,7 +19362,7 @@ async function streamEvents(res: ServerResponse, runDir: string, after: number):
   const deadline = Date.now() + 60_000;
 
   while (!res.destroyed && Date.now() < deadline) {
-    const allEvents = await readRunEventsIfPresent(runDir);
+    const allEvents = await readRunEventsIfPresent(runDir, options);
     const events = filterEvents(allEvents, lastSeq);
     for (const event of events) {
       lastSeq = Math.max(lastSeq, event.seq);
@@ -19195,7 +19372,7 @@ async function streamEvents(res: ServerResponse, runDir: string, after: number):
     }
 
     const latestEvent = latestRunEvent(allEvents);
-    const state = await readRunStateIfPresent(runDir);
+    const state = await readRunStateIfPresent(runDir, options);
     if (shouldCloseRunEventStream(state, latestEvent, lastSeq)) {
       res.end();
       return;
@@ -19219,27 +19396,22 @@ function latestRunEvent(events: HarnessEvent[]): HarnessEvent | undefined {
   );
 }
 
-async function readRunEventsIfPresent(runDir: string): Promise<HarnessEvent[]> {
+async function readRunEventsIfPresent(runDir: string, options?: HarnessServerOptions): Promise<HarnessEvent[]> {
   try {
-    return await readRunEvents(runDir);
+    return await readRunEvents(runDir, options?.stateBackend?.events);
   } catch (error) {
     if (isNotFound(error)) return [];
     throw error;
   }
 }
 
-async function readRunStateIfPresent(runDir: string): Promise<ReadableRunState | undefined> {
-  try {
-    return await readRunState(runDir);
-  } catch (error) {
-    if (isNotFound(error)) return undefined;
-    throw error;
-  }
+async function readRunStateIfPresent(runDir: string, options?: HarnessServerOptions): Promise<ReadableRunState | undefined> {
+  return loadRunStateIfPresent(runDir, options?.stateBackend?.documents);
 }
 
-async function readRunStateForScan(runDir: string): Promise<ReadableRunState | undefined> {
+async function readRunStateForScan(runDir: string, options?: HarnessServerOptions): Promise<ReadableRunState | undefined> {
   try {
-    return await readRunState(runDir);
+    return await readRunState(runDir, options);
   } catch (error) {
     if (isNotFound(error) || error instanceof SyntaxError) return undefined;
     throw error;
@@ -19298,7 +19470,7 @@ function requestedModelProtocol(body: RunRequestBody, options: HarnessServerOpti
 }
 
 async function effectiveTenantModelApiKey(options: HarnessServerOptions, tenant: string, access?: { modelKeyEnv?: string }): Promise<string | undefined> {
-  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant);
+  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant, options);
   const envName = access?.modelKeyEnv ?? policy?.modelKeyEnv ?? options.tenantModelKeyEnvs?.[tenant];
   if (!envName) return options.modelApiKey;
   const value = process.env[envName];
@@ -19306,7 +19478,9 @@ async function effectiveTenantModelApiKey(options: HarnessServerOptions, tenant:
   return value;
 }
 
-async function readTenantPolicy(workspaceRoot: string, tenant: string): Promise<TenantPolicy | undefined> {
+async function readTenantPolicy(workspaceRoot: string, tenant: string, options?: HarnessServerOptions): Promise<TenantPolicy | undefined> {
+  const stored = await options?.stateBackend?.documents.get<unknown>("tenant-policy", tenant);
+  if (stored) return tenantPolicyFromUnknown(stored.value);
   try {
     return tenantPolicyFromUnknown(JSON.parse(await readFile(tenantPolicyPath(workspaceRoot, tenant), "utf8")));
   } catch (error) {
@@ -19315,7 +19489,8 @@ async function readTenantPolicy(workspaceRoot: string, tenant: string): Promise<
   }
 }
 
-async function writeTenantPolicy(workspaceRoot: string, tenant: string, policy: TenantPolicy): Promise<void> {
+async function writeTenantPolicy(workspaceRoot: string, tenant: string, policy: TenantPolicy, options?: HarnessServerOptions): Promise<void> {
+  await options?.stateBackend?.documents.put("tenant-policy", tenant, policy);
   await mkdir(tenantPolicyDir(workspaceRoot, tenant), { recursive: true });
   await writeFile(tenantPolicyPath(workspaceRoot, tenant), JSON.stringify(policy, null, 2) + "\n", "utf8");
 }
@@ -19974,7 +20149,7 @@ async function requireTenantAccess(
   url?: URL,
   requiredRole: TenantRole = "viewer",
 ): Promise<TenantAccess | undefined> {
-  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant);
+  const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant, options);
   const tokens = options.tenantTokens ?? {};
   const apiKeys = options.tenantApiKeys ?? {};
   const hasGlobalAuth = Object.keys(tokens).length > 0 || Object.keys(apiKeys).length > 0;
@@ -20068,24 +20243,31 @@ async function serverStatusAccessKeys(workspaceRoot: string, options: HarnessSer
   const configuredKeys = Object.entries(options.tenantApiKeys ?? {})
     .filter(([tenant]) => isSafeTenantDirectoryName(tenant))
     .flatMap(([, keys]) => keys);
-  const policyKeys = await policyStatusAccessKeys(workspaceRoot);
+  const policyKeys = await policyStatusAccessKeys(workspaceRoot, options);
   return [...legacyKeys, ...configuredKeys, ...policyKeys];
 }
 
-async function policyStatusAccessKeys(workspaceRoot: string): Promise<TenantApiKey[]> {
-  let entries;
+async function policyStatusAccessKeys(workspaceRoot: string, options: HarnessServerOptions): Promise<TenantApiKey[]> {
+  let entries: Dirent[];
   try {
     entries = await readdir(workspaceRoot, { withFileTypes: true });
   } catch (error) {
-    if (isNotFound(error)) return [];
-    throw error;
+    if (isNotFound(error)) entries = [];
+    else throw error;
   }
 
   const keys: TenantApiKey[] = [];
+  const storedTenants = new Set<string>();
+  for (const document of await options.stateBackend?.documents.list<unknown>("tenant-policy") ?? []) {
+    if (!isSafeTenantDirectoryName(document.key)) continue;
+    storedTenants.add(document.key);
+    keys.push(...(tenantPolicyFromUnknown(document.value).apiKeys ?? []));
+  }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!isSafeTenantDirectoryName(entry.name)) continue;
-    const policy = await readTenantPolicy(workspaceRoot, entry.name);
+    if (storedTenants.has(entry.name)) continue;
+    const policy = await readTenantPolicy(workspaceRoot, entry.name, options);
     keys.push(...(policy?.apiKeys ?? []));
   }
   return keys;
@@ -20560,13 +20742,14 @@ async function initialIssueCommentEventsForRun(
 }
 
 async function syncIssueCommentsIntoRun(
+  options: HarnessServerOptions,
   runDir: string,
   state: ReadableRunState,
   issue: string,
   comments: GiteaIssueComment[],
   context: IssueCommentSyncContext,
 ): Promise<IssueCommentSyncResult> {
-  const existingEvents = await readRunEventsIfPresent(runDir);
+  const existingEvents = await readRunEventsIfPresent(runDir, options);
   const syncedIds = syncedIssueCommentIds(existingEvents, issue);
   const events: HarnessEvent[] = [];
   let pauseRequested = 0;
@@ -20604,15 +20787,15 @@ async function syncIssueCommentsIntoRun(
     if (prepared.vasRunRequested) vasRunRequested += 1;
     if (prepared.vasClaimRequested) vasClaimRequested += 1;
     if (prepared.handoffFollowupRequested) handoffFollowupRequested += 1;
-    const event = await appendRunEvent(runDir, "user_message", prepared.data);
+    const event = await appendRunEvent(runDir, "user_message", prepared.data, options.stateBackend?.events);
     syncedIds.add(prepared.id);
     events.push(event);
   }
 
   if (events.length && state.status !== "running" && state.status !== "queued") {
     const observed: RunSummary = { ...state, eventCount: events.at(-1)?.seq ?? ("eventCount" in state ? state.eventCount : existingEvents.length) };
-    await writeRunSummary(observed);
-    await writeRunStatus(runDir, observed);
+    await writeRunSummary(observed, options);
+    await writeRunStatus(runDir, observed, options);
   }
 
   return { events, pauseRequested, resumeRequested, runReviewRequested, runReviewClaimRequested, deploymentRequested, vasReviewRequested, vasRunRequested, vasClaimRequested, handoffFollowupRequested, skipped };
@@ -20987,7 +21170,7 @@ async function requestPauseForIssueCommentCommands(
       actor: stringField(data, "actor"),
       role: "viewer",
       eventSeq: event.seq,
-    });
+    }, options);
     requested += 1;
   }
   return requested;
@@ -21135,6 +21318,7 @@ async function claimRunReviewsForIssueCommentCommands(
     }
     try {
       await claimRunReview(
+        options,
         appendAuditEvent,
         tenant,
         project,
@@ -21196,6 +21380,7 @@ async function deployRunsForIssueCommentCommands(
     }
     try {
       await decideRunDeployment(
+        options,
         appendAuditEvent,
         tenant,
         project,
@@ -21490,7 +21675,7 @@ async function startHandoffFollowupRunsForIssueCommentCommands(
         issue: sourceState.metadata?.issue,
       };
       const sourceEvents = await readRunEventsIfPresent(sourceRunDir);
-      const sourceAuditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant), project, sourceRunId);
+      const sourceAuditTrail = runTenantAuditTrail(await readTenantAuditEvents(workspaceRoot, tenant, options.stateBackend?.events), project, sourceRunId);
       const sourceFollowupRuns = await runHandoffFollowupRuns(workspaceRoot, tenant, project, sourceRunId, sourceAuditTrail);
       const sourceCheckpoint = runEvidenceCheckpoint(sourceState, sourceEvents, {
         auditTrail: sourceAuditTrail,
@@ -21659,7 +21844,7 @@ async function issueCommentActorAccess(
     ? fallbackActor.slice(fallbackActor.indexOf(":") + 1)
     : undefined;
   const login = prefixedLogin ?? fallbackActor;
-  const policy = await readTenantPolicy(resolve(workspaceRoot), tenant);
+  const policy = await readTenantPolicy(resolve(workspaceRoot), tenant, options);
   const controlPlaneIdentity = policy?.controlPlaneIdentities?.find((identity) => identity.actor === fallbackActor);
   if (controlPlaneIdentity) {
     return { actor: controlPlaneIdentity.actor, role: controlPlaneIdentity.role };

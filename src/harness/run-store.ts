@@ -2,11 +2,14 @@ import { appendFile, mkdir, open, readFile, stat, unlink, writeFile } from "node
 import { basename, dirname, join } from "node:path";
 
 import type { HarnessEvent, HarnessEventType, RunSummary } from "./events.js";
+import type { DocumentStore, EventStore } from "./storage/contracts.js";
 
 export interface CreateRunStoreOptions {
   rootDir: string;
   runId: string;
   goal: string;
+  eventStore?: EventStore;
+  documentStore?: DocumentStore;
 }
 
 export interface RunStore {
@@ -14,6 +17,7 @@ export interface RunStore {
   goal: string;
   runDir: string;
   eventsPath: string;
+  eventStore?: EventStore;
   append<T>(type: HarnessEventType, data: T): Promise<HarnessEvent<T>>;
   writeSummary(summary: RunSummary): Promise<void>;
   count(): number;
@@ -35,12 +39,14 @@ export async function createRunStore(options: CreateRunStoreOptions): Promise<Ru
     goal: options.goal,
     runDir,
     eventsPath,
+    eventStore: options.eventStore,
     async append<T>(type: HarnessEventType, data: T): Promise<HarnessEvent<T>> {
-      const event = await appendEvent(eventsPath, options.runId, type, data);
+      const event = await appendEvent(eventsPath, options.runId, type, data, options.eventStore);
       seq = event.seq;
       return event;
     },
     async writeSummary(summary: RunSummary): Promise<void> {
+      await options.documentStore?.put("run-summary", options.runId, summary);
       await writeFile(join(runDir, "summary.json"), JSON.stringify(summary, null, 2) + "\n", "utf8");
     },
     count(): number {
@@ -49,14 +55,15 @@ export async function createRunStore(options: CreateRunStoreOptions): Promise<Ru
   };
 }
 
-export async function readRunEvents(runDir: string): Promise<HarnessEvent[]> {
+export async function readRunEvents(runDir: string, eventStore?: EventStore): Promise<HarnessEvent[]> {
+  if (eventStore) return readRunEventsFromStore(eventStore, basename(runDir));
   const raw = await readFile(join(runDir, "events.jsonl"), "utf8");
   return parseRunEvents(raw, basename(runDir));
 }
 
-export async function appendRunEvent<T>(runDir: string, type: HarnessEventType, data: T): Promise<HarnessEvent<T>> {
+export async function appendRunEvent<T>(runDir: string, type: HarnessEventType, data: T, eventStore?: EventStore): Promise<HarnessEvent<T>> {
   const eventsPath = join(runDir, "events.jsonl");
-  return appendEvent(eventsPath, basename(runDir) || "unknown", type, data);
+  return appendEvent(eventsPath, basename(runDir) || "unknown", type, data, eventStore);
 }
 
 async function readRunEventsIfPresent(runDir: string): Promise<HarnessEvent[]> {
@@ -73,20 +80,16 @@ async function appendEvent<T>(
   fallbackRunId: string,
   type: HarnessEventType,
   data: T,
+  eventStore?: EventStore,
 ): Promise<HarnessEvent<T>> {
   let observed: HarnessEvent<T> | undefined;
   const previous = appendQueues.get(eventsPath) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(async () => {
     const release = await acquireEventAppendLock(eventsPath);
     try {
-      const events = await readRunEventsFromPathIfPresent(eventsPath);
-      const event: HarnessEvent<T> = {
-        runId: events[0]?.runId ?? fallbackRunId,
-        seq: events.reduce((max, entry) => Math.max(max, entry.seq), 0) + 1,
-        ts: new Date().toISOString(),
-        type,
-        data,
-      };
+      const event = eventStore
+        ? await appendRunEventToStore(eventStore, fallbackRunId, type, data)
+        : await nextFileRunEvent(eventsPath, fallbackRunId, type, data);
       await appendFile(eventsPath, JSON.stringify(event) + "\n", "utf8");
       observed = event;
     } finally {
@@ -96,6 +99,51 @@ async function appendEvent<T>(
   appendQueues.set(eventsPath, next.then(() => undefined, () => undefined));
   await next;
   return observed as HarnessEvent<T>;
+}
+
+async function nextFileRunEvent<T>(
+  eventsPath: string,
+  fallbackRunId: string,
+  type: HarnessEventType,
+  data: T,
+): Promise<HarnessEvent<T>> {
+  const events = await readRunEventsFromPathIfPresent(eventsPath);
+  return {
+    runId: events[0]?.runId ?? fallbackRunId,
+    seq: events.reduce((max, entry) => Math.max(max, entry.seq), 0) + 1,
+    ts: new Date().toISOString(),
+    type,
+    data,
+  };
+}
+
+async function appendRunEventToStore<T>(
+  store: EventStore,
+  runId: string,
+  type: HarnessEventType,
+  data: T,
+): Promise<HarnessEvent<T>> {
+  const stored = await store.append(runEventStream(runId), { runId, type, data });
+  return { runId, seq: stored.seq, ts: stored.ts, type, data };
+}
+
+async function readRunEventsFromStore(store: EventStore, runId: string): Promise<HarnessEvent[]> {
+  const stored = await store.read<Record<string, unknown>>(runEventStream(runId));
+  return stored.flatMap((entry) => {
+    const value = entry.value;
+    const event = {
+      runId,
+      seq: entry.seq,
+      ts: entry.ts,
+      type: value.type,
+      data: value.data,
+    };
+    return isHarnessEvent(event, runId) ? [event] : [];
+  });
+}
+
+function runEventStream(runId: string): string {
+  return `run-events:${runId}`;
 }
 
 async function acquireEventAppendLock(eventsPath: string): Promise<() => Promise<void>> {

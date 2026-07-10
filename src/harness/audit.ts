@@ -1,5 +1,7 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
+
+import type { EventStore } from "./storage/contracts.js";
 
 export type TenantAuditEventType =
   | "project_created"
@@ -80,13 +82,15 @@ export interface TenantAuditEvent<T = unknown> {
 
 export type TenantAuditAppender = <T>(tenant: string, type: TenantAuditEventType, data: T, actor?: TenantAuditActor) => Promise<TenantAuditEvent<T>>;
 
-export function createTenantAuditAppender(workspaceRoot: string): TenantAuditAppender {
+export function createTenantAuditAppender(workspaceRoot: string, eventStore?: EventStore): TenantAuditAppender {
   const queues = new Map<string, Promise<void>>();
   return async <T>(tenant: string, type: TenantAuditEventType, data: T, actor?: TenantAuditActor): Promise<TenantAuditEvent<T>> => {
     let observed: TenantAuditEvent<T> | undefined;
     const previous = queues.get(tenant) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(async () => {
-      observed = await appendTenantAuditEvent(workspaceRoot, tenant, type, data, actor);
+      observed = eventStore
+        ? await appendTenantAuditEventToStore(eventStore, tenant, type, data, actor)
+        : await appendTenantAuditEvent(workspaceRoot, tenant, type, data, actor);
     });
     queues.set(tenant, next.then(() => undefined, () => undefined));
     await next;
@@ -94,7 +98,8 @@ export function createTenantAuditAppender(workspaceRoot: string): TenantAuditApp
   };
 }
 
-export async function readTenantAuditEvents(workspaceRoot: string, tenant: string): Promise<TenantAuditEvent[]> {
+export async function readTenantAuditEvents(workspaceRoot: string, tenant: string, eventStore?: EventStore): Promise<TenantAuditEvent[]> {
+  if (eventStore) return readTenantAuditEventsFromStore(eventStore, tenant);
   try {
     const raw = await readFile(tenantAuditLogPath(workspaceRoot, tenant), "utf8");
     return raw
@@ -138,19 +143,99 @@ async function appendTenantAuditEvent<T>(
   data: T,
   actor?: TenantAuditActor,
 ): Promise<TenantAuditEvent<T>> {
-  const events = await readTenantAuditEvents(workspaceRoot, tenant);
-  const event: TenantAuditEvent<T> = {
+  const release = await acquireTenantAuditLock(workspaceRoot, tenant);
+  try {
+    const events = await readTenantAuditEvents(workspaceRoot, tenant);
+    const event: TenantAuditEvent<T> = {
+      tenant,
+      seq: events.reduce((max, entry) => Math.max(max, entry.seq), 0) + 1,
+      ts: new Date().toISOString(),
+      type,
+      actor: actor?.actor,
+      role: actor?.role,
+      data,
+    };
+    await mkdir(tenantAuditDir(workspaceRoot, tenant), { recursive: true });
+    await appendFile(tenantAuditLogPath(workspaceRoot, tenant), JSON.stringify(event) + "\n", "utf8");
+    return event;
+  } finally {
+    await release();
+  }
+}
+
+async function appendTenantAuditEventToStore<T>(
+  store: EventStore,
+  tenant: string,
+  type: TenantAuditEventType,
+  data: T,
+  actor?: TenantAuditActor,
+): Promise<TenantAuditEvent<T>> {
+  const stored = await store.append(tenantAuditStream(tenant), {
     tenant,
-    seq: events.reduce((max, entry) => Math.max(max, entry.seq), 0) + 1,
-    ts: new Date().toISOString(),
+    type,
+    actor: actor?.actor,
+    role: actor?.role,
+    data,
+  });
+  return {
+    tenant,
+    seq: stored.seq,
+    ts: stored.ts,
     type,
     actor: actor?.actor,
     role: actor?.role,
     data,
   };
+}
+
+async function readTenantAuditEventsFromStore(store: EventStore, tenant: string): Promise<TenantAuditEvent[]> {
+  const stored = await store.read<Record<string, unknown>>(tenantAuditStream(tenant));
+  return stored.flatMap((entry) => {
+    const value = entry.value;
+    const event = {
+      tenant,
+      seq: entry.seq,
+      ts: entry.ts,
+      type: value.type,
+      actor: value.actor,
+      role: value.role,
+      data: value.data,
+    };
+    return isTenantAuditEvent(event, tenant) ? [event] : [];
+  });
+}
+
+async function acquireTenantAuditLock(workspaceRoot: string, tenant: string): Promise<() => Promise<void>> {
+  const path = join(tenantAuditDir(workspaceRoot, tenant), "audit.lock");
   await mkdir(tenantAuditDir(workspaceRoot, tenant), { recursive: true });
-  await appendFile(tenantAuditLogPath(workspaceRoot, tenant), JSON.stringify(event) + "\n", "utf8");
-  return event;
+  const deadline = Date.now() + 60_000;
+  while (true) {
+    try {
+      const handle = await open(path, "wx");
+      await handle.writeFile(`${process.pid}\n`, "utf8");
+      await handle.close();
+      return async () => {
+        await unlink(path).catch((error) => {
+          if (!isNotFound(error)) throw error;
+        });
+      };
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+      const lockStat = await stat(path).catch((statError) => isNotFound(statError) ? undefined : Promise.reject(statError));
+      if (lockStat && lockStat.mtimeMs + 60_000 <= Date.now()) {
+        await unlink(path).catch((unlinkError) => {
+          if (!isNotFound(unlinkError)) throw unlinkError;
+        });
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`timed out acquiring tenant audit lock: ${tenant}`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+}
+
+function tenantAuditStream(tenant: string): string {
+  return `tenant-audit:${tenant}`;
 }
 
 function tenantAuditDir(workspaceRoot: string, tenant: string): string {
@@ -163,4 +248,8 @@ function tenantAuditLogPath(workspaceRoot: string, tenant: string): string {
 
 function isNotFound(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }

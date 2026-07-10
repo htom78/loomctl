@@ -4481,6 +4481,58 @@ test("loom harness doctor reports invalid serve numeric flags before serving", a
   });
 });
 
+test("loom harness doctor reports missing distributed state envs without leaking values", async () => {
+  const workspaceRoot = await tempDir("loom-cli-doctor-state-backend-env");
+  const result = await execa(
+    "npx",
+    [
+      "tsx",
+      "src/index.ts",
+      "harness",
+      "doctor",
+      "--workspace-root",
+      workspaceRoot,
+      "--state-backend",
+      "postgres-redis",
+      "--state-postgres-url-env",
+      "LOOM_TEST_MISSING_POSTGRES_URL",
+      "--state-redis-url-env",
+      "LOOM_TEST_MISSING_REDIS_URL",
+    ],
+    {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        LOOM_TEST_MISSING_POSTGRES_URL: "",
+        LOOM_TEST_MISSING_REDIS_URL: "",
+      },
+      reject: false,
+      timeout: 5000,
+    },
+  );
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stderr, "");
+  const body = JSON.parse(result.stdout);
+  assert.equal(body.ok, false);
+  assert.ok(body.missing.includes("stateBackend"));
+  assert.deepEqual(body.checks.stateBackend, {
+    required: true,
+    ok: false,
+    kind: "postgres-redis",
+    distributed: true,
+    postgresUrlEnv: "LOOM_TEST_MISSING_POSTGRES_URL",
+    postgresUrlSet: false,
+    postgresSchema: "loom",
+    redisUrlEnv: "LOOM_TEST_MISSING_REDIS_URL",
+    redisUrlSet: false,
+    redisPrefix: "loom",
+    missingEnvNames: ["LOOM_TEST_MISSING_POSTGRES_URL", "LOOM_TEST_MISSING_REDIS_URL"],
+  });
+  assert.ok(body.recommendedFlags.includes("--state-postgres-url-env <env>"));
+  assert.ok(body.recommendedFlags.includes("--state-redis-url-env <env>"));
+});
+
 test("loom harness doctor rejects unsafe AGS cockpit queue store flags", async () => {
   const workspaceRoot = await tempDir("loom-cli-doctor-invalid-ags-queue-store");
   const result = await execa(
@@ -10597,6 +10649,16 @@ test("loom harness platform-cutover-plan emits token-free operator argv", async 
       "9876",
       "--operator-bundle-dir",
       operatorBundleDir,
+      "--state-backend",
+      "postgres-redis",
+      "--state-postgres-url-env",
+      "LOOM_TEST_STATE_POSTGRES_URL",
+      "--state-postgres-schema",
+      "loom_platform_test",
+      "--state-redis-url-env",
+      "LOOM_TEST_STATE_REDIS_URL",
+      "--state-redis-prefix",
+      "loom-platform-test",
       "--profile",
       "platform-readiness",
       "--tenant",
@@ -10690,6 +10752,8 @@ test("loom harness platform-cutover-plan emits token-free operator argv", async 
       env: {
         ...process.env,
         LOOM_TEST_PLATFORM_MODEL_KEY: "platform-model-secret",
+        LOOM_TEST_STATE_POSTGRES_URL: "postgres://loom:state-postgres-secret@postgres/loom",
+        LOOM_TEST_STATE_REDIS_URL: "redis://:state-redis-secret@redis:6379",
         LOOM_TEST_AGS_TOKEN: "ags-secret",
         LOOM_TEST_PLATFORM_WEBHOOK_SECRET: "platform-webhook-secret",
         LOOM_TEST_PLATFORM_ADMIN_TENANT_KEY: "admin-tenant-secret",
@@ -10704,6 +10768,8 @@ test("loom harness platform-cutover-plan emits token-free operator argv", async 
     assert.fail(result.stderr || result.stdout);
   }
   assert.equal(result.stdout.includes("platform-model-secret"), false);
+  assert.equal(result.stdout.includes("state-postgres-secret"), false);
+  assert.equal(result.stdout.includes("state-redis-secret"), false);
   assert.equal(result.stdout.includes("ags-secret"), false);
   assert.equal(result.stdout.includes("platform-webhook-secret"), false);
   assert.equal(result.stdout.includes("dev-tenant-secret"), false);
@@ -10755,6 +10821,13 @@ test("loom harness platform-cutover-plan emits token-free operator argv", async 
       webhookSecretEnv: "LOOM_TEST_PLATFORM_WEBHOOK_SECRET",
       agentGitServiceTokenSecretRoot: secretRoot,
     },
+    stateBackend: {
+      kind: "postgres-redis",
+      postgresUrlEnv: "LOOM_TEST_STATE_POSTGRES_URL",
+      postgresSchema: "loom_platform_test",
+      redisUrlEnv: "LOOM_TEST_STATE_REDIS_URL",
+      redisPrefix: "loom-platform-test",
+    },
     agentGitServiceStaging: {
       issue: "octo/real-smoke#42",
       repo: "octo/real-smoke",
@@ -10780,6 +10853,16 @@ test("loom harness platform-cutover-plan emits token-free operator argv", async 
         name: "LOOM_TEST_PLATFORM_MODEL_KEY",
         requiredFor: ["platform-preflight", "serve", "smoke"],
         uses: [{ sourceFlag: "--model-key-env", purpose: "OpenAI-compatible model gateway API key" }],
+      },
+      {
+        name: "LOOM_TEST_STATE_POSTGRES_URL",
+        requiredFor: ["platform-preflight", "serve"],
+        uses: [{ sourceFlag: "--state-postgres-url-env", purpose: "PostgreSQL durable state connection URL" }],
+      },
+      {
+        name: "LOOM_TEST_STATE_REDIS_URL",
+        requiredFor: ["platform-preflight", "serve"],
+        uses: [{ sourceFlag: "--state-redis-url-env", purpose: "Redis coordination connection URL" }],
       },
       {
         name: "LOOM_TEST_PLATFORM_DEV_TOKEN",
@@ -11076,6 +11159,19 @@ test("loom harness platform-cutover-plan emits token-free operator argv", async 
   assert.deepEqual(body.platformPreflightCommandArgs.slice(-2), ["--report", "reports/platform-preflight.json"]);
   assert.ok(body.platformPreflightCommandArgs.includes("--tenant-key-env"));
   assert.ok(!body.platformPreflightCommandArgs.includes("--tenant-key"));
+  assert.deepEqual(
+    body.platformPreflightCommandArgs.slice(
+      body.platformPreflightCommandArgs.indexOf("--state-backend"),
+      body.platformPreflightCommandArgs.indexOf("--state-backend") + 10,
+    ),
+    [
+      "--state-backend", "postgres-redis",
+      "--state-postgres-url-env", "LOOM_TEST_STATE_POSTGRES_URL",
+      "--state-postgres-schema", "loom_platform_test",
+      "--state-redis-url-env", "LOOM_TEST_STATE_REDIS_URL",
+      "--state-redis-prefix", "loom-platform-test",
+    ],
+  );
   assert.equal(body.serveCommandArgs[0], "loom");
   assert.equal(body.serveCommandArgs[2], "serve");
   assert.deepEqual(
@@ -11088,6 +11184,19 @@ test("loom harness platform-cutover-plan emits token-free operator argv", async 
   assert.deepEqual(stageById.get("serve").commandArgs, body.serveCommandArgs);
   assert.ok(body.serveCommandArgs.includes("--tenant-key-env"));
   assert.ok(!body.serveCommandArgs.includes("--tenant-key"));
+  assert.deepEqual(
+    body.serveCommandArgs.slice(
+      body.serveCommandArgs.indexOf("--state-backend"),
+      body.serveCommandArgs.indexOf("--state-backend") + 10,
+    ),
+    [
+      "--state-backend", "postgres-redis",
+      "--state-postgres-url-env", "LOOM_TEST_STATE_POSTGRES_URL",
+      "--state-postgres-schema", "loom_platform_test",
+      "--state-redis-url-env", "LOOM_TEST_STATE_REDIS_URL",
+      "--state-redis-prefix", "loom-platform-test",
+    ],
+  );
 });
 
 test("loom harness platform-cutover-run executes only non-approval stages by default", async () => {
