@@ -1267,9 +1267,7 @@ test("loom harness serve accepts agent-git-service as a serve-enabled candidate 
   const result = await execa(
     process.execPath,
     [
-      "--import",
-      "tsx",
-      "src/index.ts",
+      "dist/index.js",
       "harness",
       "serve",
       "--workspace-root",
@@ -8745,9 +8743,7 @@ test("loom harness serve online sandbox profile exposes the required tool allowl
   const result = await execa(
     process.execPath,
     [
-      "--import",
-      "tsx",
-      "src/index.ts",
+      "dist/index.js",
       "harness",
       "serve",
       "--workspace-root",
@@ -8850,7 +8846,7 @@ test("loom harness serve lists the status endpoint", async () => {
   const workspaceRoot = await tempDir("loom-cli-serve-status");
   const result = await execa(
     process.execPath,
-    ["--import", "tsx", "src/index.ts", "harness", "serve", "--workspace-root", workspaceRoot, "--host", "127.0.0.1", "--port", "0"],
+    ["dist/index.js", "harness", "serve", "--workspace-root", workspaceRoot, "--host", "127.0.0.1", "--port", "0"],
     { cwd: process.cwd(), reject: false, timeout: 5000 },
   );
 
@@ -8918,9 +8914,7 @@ test("loom harness serve uses tenant-scoped Gitea token envs", async () => {
   const server = execa(
     process.execPath,
     [
-      "--import",
-      "tsx",
-      "src/index.ts",
+      "dist/index.js",
       "harness",
       "serve",
       "--workspace-root",
@@ -36431,9 +36425,7 @@ test("loom harness serve passes the operator cockpit queue backend to status", a
   const server = execa(
     process.execPath,
     [
-      "--import",
-      "tsx",
-      "src/index.ts",
+      "dist/index.js",
       "harness",
       "serve",
       "--workspace-root",
@@ -36630,9 +36622,7 @@ test("loom harness serve passes tenant policy Coder template parameters when cre
   const server = execa(
     process.execPath,
     [
-      "--import",
-      "tsx",
-      "src/index.ts",
+      "dist/index.js",
       "harness",
       "serve",
       "--workspace-root",
