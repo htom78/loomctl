@@ -262,6 +262,8 @@ harness
   .option("--workspace-session-idle-timeout-ms <ms>", "workspace terminal idle timeout in milliseconds", "1800000")
   .option("--run-lease-ttl-ms <ms>", "running harness run lease TTL in milliseconds", "120000")
   .option("--auto-abandon-stale-runs", "auto-abandon lease-expired orphaned running runs on startup", false)
+  .option("--rate-limit-rps <count>", "sustained HTTP requests per second per client IP; 0 disables", "200")
+  .option("--rate-limit-burst <count>", "HTTP request burst per client IP", "500")
   .action(async (opts: HarnessServeCliOptions) => {
     requireServeFlagValidation(opts);
     const port = Number(opts.port);
@@ -275,6 +277,8 @@ harness
       : parsePositiveIntFlag(opts.maxTenantActiveRuns, "--max-tenant-active-runs");
     const workspaceSessionIdleTimeoutMs = parsePositiveIntFlag(opts.workspaceSessionIdleTimeoutMs, "--workspace-session-idle-timeout-ms");
     const runLeaseTtlMs = parsePositiveIntFlag(opts.runLeaseTtlMs, "--run-lease-ttl-ms");
+    const rateLimitRps = opts.rateLimitRps === "0" ? 0 : parsePositiveIntFlag(opts.rateLimitRps ?? "200", "--rate-limit-rps");
+    const rateLimitBurst = parsePositiveIntFlag(opts.rateLimitBurst ?? "500", "--rate-limit-burst");
     const stateDependencyProbeIntervalMs = parsePositiveIntFlag(opts.stateProbeIntervalMs ?? "5000", "--state-probe-interval-ms");
     const stateDependencyProbeTimeoutMs = parsePositiveIntFlag(opts.stateProbeTimeoutMs ?? "2000", "--state-probe-timeout-ms");
     const stateDependencyProbeMaxStalenessMs = parsePositiveIntFlag(opts.stateProbeMaxStalenessMs ?? "15000", "--state-probe-max-staleness-ms");
@@ -338,6 +342,8 @@ harness
       maxTenantActiveRuns,
       workspaceSessionIdleTimeoutMs,
       runLeaseTtlMs,
+      rateLimitRps,
+      rateLimitBurst,
       autoAbandonStaleRuns: serveOptions.autoAbandonStaleRuns,
       stateBackend,
       stateDependencyProbeIntervalMs,
@@ -1815,7 +1821,14 @@ export function requireSafeServeExecutor(options: ServeExecutorSafetyOptions): v
 }
 
 export function unsafeLocalExecutorReasons(options: ServeExecutorSafetyOptions, policyTenantAuthConfigured?: boolean): string[] {
-  if (options.executor !== "local" || options.allowUnsafeLocalExecutor) return [];
+  if (options.executor !== "local") return [];
+  if (options.allowUnsafeLocalExecutor) {
+    // --allow-unsafe-local-executor is a loopback-only escape hatch; a
+    // non-loopback local executor stays refused no matter which flags are set.
+    return isLoopbackHost(options.host)
+      ? []
+      : [`host ${options.host} is not loopback and --allow-unsafe-local-executor only applies to loopback hosts`];
+  }
   const hasPolicyTenantAuth = policyTenantAuthConfigured ??
     Object.values(readPolicyTenantApiKeysForDoctor(options.workspaceRoot)).some((keys) => keys.length > 0);
   return [

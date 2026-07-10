@@ -28,6 +28,10 @@ import { TenantPolicy, TenantPolicyRequestBody, TenantPolicySettingsRequestBody,
 import { CancelRequestBody, filterEvents, requireServerStatusAccess, requireSafeName, badRequest, payloadTooLarge, statusForError, writeJson, writeText, writeHtml, setCorsHeaders, startedAt } from "./shared.js";
 
 
+const DEFAULT_RATE_LIMIT_RPS = 200;
+const DEFAULT_RATE_LIMIT_BURST = 500;
+const RATE_LIMIT_MAX_BUCKETS = 10_000;
+
 export interface HarnessServerOptions {
   workspaceRoot: string;
   profile?: string;
@@ -66,6 +70,8 @@ export interface HarnessServerOptions {
   workspaceSessionIdleTimeoutMs?: number;
   runLeaseTtlMs?: number;
   autoAbandonStaleRuns?: boolean;
+  rateLimitRps?: number;
+  rateLimitBurst?: number;
   controlPlaneBaseUrl?: string;
   controlPlaneAdminToken?: string;
   controlPlaneTenantTokens?: Record<string, string>;
@@ -228,11 +234,42 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
     queueRecovery.errors.push({ message });
   });
 
+  const rateLimitRps = serverOptions.rateLimitRps ?? DEFAULT_RATE_LIMIT_RPS;
+  const rateLimitBurst = serverOptions.rateLimitBurst ?? DEFAULT_RATE_LIMIT_BURST;
+  const rateLimitBuckets = new Map<string, { tokens: number; refilledAt: number }>();
+  const takeRateLimitToken = (clientKey: string): boolean => {
+    if (rateLimitRps <= 0) return true;
+    const now = Date.now();
+    // ponytail: lazy sweep instead of a timer; bounded by client-IP cardinality
+    if (rateLimitBuckets.size > RATE_LIMIT_MAX_BUCKETS) {
+      for (const [key, bucket] of rateLimitBuckets) {
+        if (bucket.tokens >= rateLimitBurst && now - bucket.refilledAt > 60_000) rateLimitBuckets.delete(key);
+      }
+    }
+    const bucket = rateLimitBuckets.get(clientKey) ?? { tokens: rateLimitBurst, refilledAt: now };
+    bucket.tokens = Math.min(rateLimitBurst, bucket.tokens + ((now - bucket.refilledAt) / 1000) * rateLimitRps);
+    bucket.refilledAt = now;
+    if (bucket.tokens < 1) {
+      rateLimitBuckets.set(clientKey, bucket);
+      return false;
+    }
+    bucket.tokens -= 1;
+    rateLimitBuckets.set(clientKey, bucket);
+    return true;
+  };
+
   const server = createServer(async (req, res) => {
     setCorsHeaders(res);
 
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
+      return;
+    }
+
+    const requestPath = (req.url ?? "/").split("?")[0];
+    if (requestPath !== "/healthz" && requestPath !== "/readyz" && !takeRateLimitToken(req.socket.remoteAddress ?? "unknown")) {
+      res.setHeader("retry-after", "1");
+      writeJson(res, 429, { error: "too many requests" });
       return;
     }
 

@@ -83,9 +83,13 @@ loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
   sandbox tool allowlist; `--profile platform-readiness` — full
   Coder/control-plane/LiteLLM/brain readiness checks in `GET /status`.
 - The local executor is for loopback, single-user development only. `serve`
-  rejects authenticated, non-loopback, or shell-enabled local executor use
-  unless you explicitly pass `--allow-unsafe-local-executor`. Use the Docker or
-  Coder executor for anything shared.
+  rejects authenticated or shell-enabled local executor use unless you
+  explicitly pass `--allow-unsafe-local-executor`, and a non-loopback host with
+  the local executor is refused unconditionally — the escape hatch only applies
+  to loopback. Use the Docker or Coder executor for anything shared.
+- Per-client-IP request rate limiting is on by default (`--rate-limit-rps 200`,
+  `--rate-limit-burst 500`; `--rate-limit-rps 0` disables). `/healthz` and
+  `/readyz` are exempt so probes keep working.
 
 For two or more instances, use PostgreSQL for durable metadata/audit and Redis
 for leases and queued-run claims:

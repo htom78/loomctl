@@ -42,7 +42,8 @@ loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
 
 - 异步 run、排队、取消/暂停/恢复、`clientRequestId` 幂等创建、SSE 事件流、浏览器 dashboard/workbench。
 - `--profile online-sandbox` 在线沙箱工具白名单;`--profile platform-readiness` 完整平台就绪检查(`GET /status`)。
-- **local executor 只用于 loopback 单人开发**。`serve` 会拒绝认证 + 非 loopback + 开 shell 的 local executor 组合,除非显式传 `--allow-unsafe-local-executor`。共享部署一律用 Docker 或 Coder executor。
+- **local executor 只用于 loopback 单人开发**。`serve` 拒绝认证或开 shell 的 local executor,除非显式传 `--allow-unsafe-local-executor`;非 loopback host + local executor 无条件拒绝,escape hatch 只在 loopback 下生效。共享部署一律用 Docker 或 Coder executor。
+- 默认开启按客户端 IP 的请求限流(`--rate-limit-rps 200`、`--rate-limit-burst 500`,`--rate-limit-rps 0` 关闭);`/healthz` `/readyz` 豁免。
 
 多实例部署用 Postgres(持久元数据/审计)+ Redis(租约/队列):
 

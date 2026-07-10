@@ -95,6 +95,8 @@ export interface HarnessServeCliOptions {
   workspaceSessionIdleTimeoutMs: string;
   runLeaseTtlMs: string;
   autoAbandonStaleRuns: boolean;
+  rateLimitRps?: string;
+  rateLimitBurst?: string;
 }
 
 export interface HarnessControlPlanePreflightCliOptions {
