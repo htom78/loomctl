@@ -264,6 +264,7 @@ harness
   .option("--auto-abandon-stale-runs", "auto-abandon lease-expired orphaned running runs on startup", false)
   .option("--rate-limit-rps <count>", "sustained HTTP requests per second per client IP; 0 disables", "200")
   .option("--rate-limit-burst <count>", "HTTP request burst per client IP", "500")
+  .option("--rate-limit-trusted-proxy-hops <count>", "trusted reverse-proxy hops; when >0, rate-limit by the client's X-Forwarded-For hop instead of the socket peer", "0")
   .action(async (opts: HarnessServeCliOptions) => {
     requireServeFlagValidation(opts);
     const port = Number(opts.port);
@@ -279,6 +280,9 @@ harness
     const runLeaseTtlMs = parsePositiveIntFlag(opts.runLeaseTtlMs, "--run-lease-ttl-ms");
     const rateLimitRps = opts.rateLimitRps === "0" ? 0 : parsePositiveIntFlag(opts.rateLimitRps ?? "200", "--rate-limit-rps");
     const rateLimitBurst = parsePositiveIntFlag(opts.rateLimitBurst ?? "500", "--rate-limit-burst");
+    const rateLimitTrustedProxyHops = opts.rateLimitTrustedProxyHops === undefined || opts.rateLimitTrustedProxyHops === "0"
+      ? 0
+      : parsePositiveIntFlag(opts.rateLimitTrustedProxyHops, "--rate-limit-trusted-proxy-hops");
     const stateDependencyProbeIntervalMs = parsePositiveIntFlag(opts.stateProbeIntervalMs ?? "5000", "--state-probe-interval-ms");
     const stateDependencyProbeTimeoutMs = parsePositiveIntFlag(opts.stateProbeTimeoutMs ?? "2000", "--state-probe-timeout-ms");
     const stateDependencyProbeMaxStalenessMs = parsePositiveIntFlag(opts.stateProbeMaxStalenessMs ?? "15000", "--state-probe-max-staleness-ms");
@@ -344,6 +348,7 @@ harness
       runLeaseTtlMs,
       rateLimitRps,
       rateLimitBurst,
+      rateLimitTrustedProxyHops,
       autoAbandonStaleRuns: serveOptions.autoAbandonStaleRuns,
       stateBackend,
       stateDependencyProbeIntervalMs,
@@ -1822,21 +1827,33 @@ export function requireSafeServeExecutor(options: ServeExecutorSafetyOptions): v
 
 export function unsafeLocalExecutorReasons(options: ServeExecutorSafetyOptions, policyTenantAuthConfigured?: boolean): string[] {
   if (options.executor !== "local") return [];
-  if (options.allowUnsafeLocalExecutor) {
-    // --allow-unsafe-local-executor is a loopback-only escape hatch; a
-    // non-loopback local executor stays refused no matter which flags are set.
-    return isLoopbackHost(options.host)
-      ? []
-      : [`host ${options.host} is not loopback and --allow-unsafe-local-executor only applies to loopback hosts`];
-  }
   const hasPolicyTenantAuth = policyTenantAuthConfigured ??
     Object.values(readPolicyTenantApiKeysForDoctor(options.workspaceRoot)).some((keys) => keys.length > 0);
+  const tenantAuthConfigured = Boolean(
+    options.tenantToken?.length || options.tenantKey?.length || options.tenantKeyEnv?.length || options.oidcIssuer || hasPolicyTenantAuth,
+  );
+  if (options.allowUnsafeLocalExecutor) {
+    // Escape hatch, but not a blank cheque. It never applies to a non-loopback
+    // host. On loopback it still refuses the one combination that is a
+    // cross-tenant RCE: multiple tenants plus shell.exec share one host and one
+    // process user with no sandbox. (A loopback bind can still be reverse-proxied
+    // to the internet, so "loopback" is not proof of single-user.) Multi-tenant
+    // without shell.exec is limited to per-run path-guarded workspace file ops
+    // and stays allowed for a trusted single-box deployment.
+    const shellEnabled = options.allowShell || options.allowTool.includes("shell.exec");
+    return [
+      !isLoopbackHost(options.host)
+        ? `host ${options.host} is not loopback and --allow-unsafe-local-executor only applies to loopback hosts`
+        : undefined,
+      tenantAuthConfigured && shellEnabled
+        ? "shell.exec with tenant authentication is a cross-tenant RCE on the local executor; use --executor docker|coder"
+        : undefined,
+    ].filter((reason): reason is string => Boolean(reason));
+  }
   return [
     !isLoopbackHost(options.host) ? `host ${options.host} is not loopback` : undefined,
     options.allowShell || options.allowTool.includes("shell.exec") ? "shell.exec is allowed" : undefined,
-    options.tenantToken?.length || options.tenantKey?.length || options.tenantKeyEnv?.length || options.oidcIssuer || hasPolicyTenantAuth
-      ? "tenant authentication is configured"
-      : undefined,
+    tenantAuthConfigured ? "tenant authentication is configured" : undefined,
   ].filter((reason): reason is string => Boolean(reason));
 }
 

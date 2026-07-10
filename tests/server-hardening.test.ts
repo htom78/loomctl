@@ -107,3 +107,109 @@ test("--allow-unsafe-local-executor no longer bypasses the non-loopback local ex
   assert.ok(original.some((reason) => reason.includes("not loopback")));
   assert.ok(original.some((reason) => reason.includes("shell.exec is allowed")));
 });
+
+test("rate limiting keys by X-Forwarded-For client hop only when trusted proxy hops are declared", async () => {
+  const workspaceRoot = await tempDir("loom-rate-limit-proxy");
+  const server = createHarnessHttpServer({
+    workspaceRoot,
+    allowUnsafeLocalExecutor: true,
+    rateLimitRps: 1,
+    rateLimitBurst: 2,
+    rateLimitTrustedProxyHops: 1,
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  try {
+    // Two distinct clients arrive through one trusted proxy. XFF = "<client>, <proxy>".
+    // Keyed on the client hop (index = len - hops - 1 = 0), each gets its own bucket,
+    // so client B is not throttled by client A exhausting its burst.
+    const drainA = async () => {
+      const statuses: number[] = [];
+      for (let i = 0; i < 4; i += 1) {
+        const r = await fetch(`${baseUrl}/status`, { headers: { "x-forwarded-for": "10.0.0.1, 127.0.0.1" } });
+        statuses.push(r.status);
+        await r.arrayBuffer();
+      }
+      return statuses;
+    };
+    const aStatuses = await drainA();
+    assert.equal(aStatuses.includes(429), true, "client A should be throttled after its own burst");
+
+    const b = await fetch(`${baseUrl}/status`, { headers: { "x-forwarded-for": "10.0.0.2, 127.0.0.1" } });
+    assert.notEqual(b.status, 429);
+    await b.arrayBuffer();
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("X-Forwarded-For is ignored for rate limiting when no trusted proxy hops are declared", async () => {
+  const workspaceRoot = await tempDir("loom-rate-limit-no-proxy-trust");
+  const server = createHarnessHttpServer({
+    workspaceRoot,
+    allowUnsafeLocalExecutor: true,
+    rateLimitRps: 1,
+    rateLimitBurst: 2,
+    // rateLimitTrustedProxyHops defaults to 0 -> trust nobody, key on socket peer
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  try {
+    // A spoofed, ever-changing XFF must NOT mint a fresh bucket per request; all
+    // requests share the socket-peer bucket and get throttled after the burst.
+    const statuses: number[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const r = await fetch(`${baseUrl}/status`, { headers: { "x-forwarded-for": `10.0.0.${i}` } });
+      statuses.push(r.status);
+      await r.arrayBuffer();
+    }
+    assert.equal(statuses.includes(429), true, "spoofed XFF must not bypass the socket-peer bucket");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("--allow-unsafe-local-executor refuses the cross-tenant shell.exec RCE even on loopback", async () => {
+  const base = {
+    executor: "local",
+    workspaceRoot: await tempDir("loom-unsafe-local-multitenant"),
+    allowShell: false,
+    allowTool: [] as string[],
+    allowUnsafeLocalExecutor: true,
+    host: "127.0.0.1",
+  };
+
+  // genuine single-user local dev: loopback, no tenant auth -> allowed
+  assert.deepEqual(unsafeLocalExecutorReasons({ ...base }, false), []);
+
+  // multi-tenant without shell.exec: per-run path-guarded file ops only -> allowed
+  assert.deepEqual(unsafeLocalExecutorReasons({ ...base, tenantKey: ["alice=ENV:ops:admin"] }, false), []);
+  assert.deepEqual(unsafeLocalExecutorReasons({ ...base, oidcIssuer: "https://idp.example" }, false), []);
+  assert.deepEqual(unsafeLocalExecutorReasons({ ...base }, true), []);
+
+  // multi-tenant + shell.exec on the local executor is a cross-tenant RCE -> refused
+  const shellPlusTenantKey = unsafeLocalExecutorReasons(
+    { ...base, allowShell: true, tenantKey: ["alice=ENV:ops:admin"] },
+    false,
+  );
+  assert.ok(shellPlusTenantKey.some((r) => r.includes("cross-tenant RCE")));
+
+  const shellPlusPolicyAuth = unsafeLocalExecutorReasons({ ...base, allowShell: true }, true);
+  assert.ok(shellPlusPolicyAuth.some((r) => r.includes("cross-tenant RCE")));
+
+  // shell.exec via --allow-tool, with tenant auth -> refused
+  const toolShellPlusOidc = unsafeLocalExecutorReasons(
+    { ...base, allowTool: ["shell.exec"], oidcIssuer: "https://idp.example" },
+    false,
+  );
+  assert.ok(toolShellPlusOidc.some((r) => r.includes("cross-tenant RCE")));
+
+  // single-user (no tenant auth) with shell.exec stays allowed on loopback
+  assert.deepEqual(unsafeLocalExecutorReasons({ ...base, allowShell: true }, false), []);
+});

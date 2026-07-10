@@ -482,7 +482,7 @@ async function requireServerStatusAccess(
   options: HarnessServerOptions,
   url?: URL,
 ): Promise<TenantAccess | undefined> {
-  const keys = await serverStatusAccessKeys(workspaceRoot, options);
+  const keys = serverStatusAccessKeys(options);
   const oidc = options.oidcAuthenticator;
   if (keys.length === 0 && !oidc) return undefined;
 
@@ -527,7 +527,13 @@ function safeEqualString(left: string | undefined, right: string | undefined): b
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
-async function serverStatusAccessKeys(workspaceRoot: string, options: HarnessServerOptions): Promise<TenantApiKey[]> {
+// The cross-tenant /status and /metrics views are a platform-operator surface.
+// Only keys the operator configured at startup (--tenant-token / --tenant-key)
+// count as operator credentials. Policy-backed keys are created by tenants
+// themselves through POST /tenants/:tenant/policy/api-keys and must never grant
+// platform-wide visibility, or any tenant's self-issued admin key would read
+// every other tenant's runs, goals, and host paths.
+function serverStatusAccessKeys(options: HarnessServerOptions): TenantApiKey[] {
   const legacyKeys = Object.entries(options.tenantTokens ?? {})
     .filter(([tenant]) => isSafeTenantDirectoryName(tenant))
     .map(([, token]) => ({
@@ -538,8 +544,7 @@ async function serverStatusAccessKeys(workspaceRoot: string, options: HarnessSer
   const configuredKeys = Object.entries(options.tenantApiKeys ?? {})
     .filter(([tenant]) => isSafeTenantDirectoryName(tenant))
     .flatMap(([, keys]) => keys);
-  const policyKeys = await policyStatusAccessKeys(workspaceRoot, options);
-  return [...legacyKeys, ...configuredKeys, ...policyKeys];
+  return [...legacyKeys, ...configuredKeys];
 }
 
 async function policyStatusAccessKeys(workspaceRoot: string, options: HarnessServerOptions): Promise<TenantApiKey[]> {

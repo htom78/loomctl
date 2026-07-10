@@ -8869,14 +8869,11 @@ test("HTTP harness ignores policy keys under unsafe tenant directories for globa
   );
 
   await withServer(workspaceRoot, async (baseUrl) => {
+    // A safe-directory operator key is configured, so the endpoint requires auth.
     const missing = await fetch(`${baseUrl}/status`);
     assert.equal(missing.status, 401);
 
-    const unsafeAdmin = await fetch(`${baseUrl}/status`, {
-      headers: { authorization: "Bearer shadow-admin" },
-    });
-    assert.equal(unsafeAdmin.status, 401);
-
+    // Configured/legacy operator keys under an unsafe tenant directory name are ignored.
     const unsafeConfiguredAdmin = await fetch(`${baseUrl}/status`, {
       headers: { authorization: "Bearer shadow-configured-admin" },
     });
@@ -8887,14 +8884,66 @@ test("HTTP harness ignores policy keys under unsafe tenant directories for globa
     });
     assert.equal(unsafeLegacyAdmin.status, 401);
 
-    const developer = await fetch(`${baseUrl}/status`, {
+    // Policy-backed keys (tenant self-issued), safe dir or not, carry no standing
+    // at the platform-global status endpoint; treated as unknown credentials.
+    const policyAdmin = await fetch(`${baseUrl}/status`, {
+      headers: { authorization: "Bearer shadow-admin" },
+    });
+    assert.equal(policyAdmin.status, 401);
+
+    const policyDeveloper = await fetch(`${baseUrl}/status`, {
       headers: { authorization: "Bearer dev-key" },
     });
-    assert.equal(developer.status, 403);
+    assert.equal(policyDeveloper.status, 401);
+
+    // The safe-directory configured operator admin key is accepted.
+    const operator = await fetch(`${baseUrl}/status`, {
+      headers: { authorization: "Bearer safe-operator-admin" },
+    });
+    assert.equal(operator.status, 200);
   }, {
     tenantTokens: { "-legacy": "shadow-legacy-admin" },
     tenantApiKeys: {
       "-api": [{ token: "shadow-configured-admin", actor: "shadow", role: "admin" }],
+      alice: [{ token: "safe-operator-admin", actor: "ops", role: "admin" }],
+    },
+  });
+});
+
+test("HTTP harness refuses a tenant self-issued policy admin key at the global status endpoint", async () => {
+  // C1 regression: a tenant can create its own admin key via
+  // POST /tenants/:tenant/policy/api-keys (persisted to policy.json). That key
+  // must never grant the cross-tenant /status or /metrics view; only keys the
+  // operator configured at startup do.
+  const workspaceRoot = await tempDir("loom-http-status-policy-admin-escalation");
+  await mkdir(join(workspaceRoot, "alice", ".loom"), { recursive: true });
+  await writeFile(
+    join(workspaceRoot, "alice", ".loom", "policy.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      apiKeys: [{ token: "self-issued-admin", actor: "alice-admin", role: "admin" }],
+    }),
+    "utf8",
+  );
+
+  await withServer(workspaceRoot, async (baseUrl) => {
+    const escalation = await fetch(`${baseUrl}/status`, {
+      headers: { authorization: "Bearer self-issued-admin" },
+    });
+    assert.equal(escalation.status, 401);
+
+    const metrics = await fetch(`${baseUrl}/metrics`, {
+      headers: { authorization: "Bearer self-issued-admin" },
+    });
+    assert.equal(metrics.status, 401);
+
+    const operator = await fetch(`${baseUrl}/status`, {
+      headers: { authorization: "Bearer operator-admin" },
+    });
+    assert.equal(operator.status, 200);
+  }, {
+    tenantApiKeys: {
+      alice: [{ token: "operator-admin", actor: "ops", role: "admin" }],
     },
   });
 });

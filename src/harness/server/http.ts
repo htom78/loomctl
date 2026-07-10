@@ -72,6 +72,7 @@ export interface HarnessServerOptions {
   autoAbandonStaleRuns?: boolean;
   rateLimitRps?: number;
   rateLimitBurst?: number;
+  rateLimitTrustedProxyHops?: number;
   controlPlaneBaseUrl?: string;
   controlPlaneAdminToken?: string;
   controlPlaneTenantTokens?: Record<string, string>;
@@ -236,7 +237,22 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
 
   const rateLimitRps = serverOptions.rateLimitRps ?? DEFAULT_RATE_LIMIT_RPS;
   const rateLimitBurst = serverOptions.rateLimitBurst ?? DEFAULT_RATE_LIMIT_BURST;
+  // Number of trusted reverse-proxy hops. 0 (default) = trust nobody: key on the
+  // socket peer. X-Forwarded-For is client-controllable, so it is only consulted
+  // when the operator declares how many trusted proxies sit in front; we then key
+  // on the hop just before the trusted ones, i.e. the real remote client.
+  const rateLimitTrustedProxyHops = Math.max(0, Math.trunc(serverOptions.rateLimitTrustedProxyHops ?? 0));
   const rateLimitBuckets = new Map<string, { tokens: number; refilledAt: number }>();
+  const rateLimitClientKey = (req: IncomingMessage): string => {
+    const socketAddress = req.socket.remoteAddress ?? "unknown";
+    if (rateLimitTrustedProxyHops === 0) return socketAddress;
+    const header = req.headers["x-forwarded-for"];
+    const raw = Array.isArray(header) ? header.join(",") : header;
+    const hops = (raw ?? "").split(",").map((hop) => hop.trim()).filter(Boolean);
+    // Drop the trusted proxy hops from the right; the next hop is the untrusted client.
+    const index = hops.length - rateLimitTrustedProxyHops - 1;
+    return index >= 0 && hops[index] ? hops[index] : socketAddress;
+  };
   const takeRateLimitToken = (clientKey: string): boolean => {
     if (rateLimitRps <= 0) return true;
     const now = Date.now();
@@ -244,6 +260,18 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
     if (rateLimitBuckets.size > RATE_LIMIT_MAX_BUCKETS) {
       for (const [key, bucket] of rateLimitBuckets) {
         if (bucket.tokens >= rateLimitBurst && now - bucket.refilledAt > 60_000) rateLimitBuckets.delete(key);
+      }
+      // Hard cap: if idle-sweep freed nothing (e.g. a spray of many distinct low-rate
+      // sources), evict the least-recently-refilled bucket so the map cannot grow
+      // unbounded into an OOM. ponytail: O(n) scan, only runs while over the cap.
+      while (rateLimitBuckets.size > RATE_LIMIT_MAX_BUCKETS) {
+        let oldestKey: string | undefined;
+        let oldestAt = Infinity;
+        for (const [key, bucket] of rateLimitBuckets) {
+          if (bucket.refilledAt < oldestAt) { oldestAt = bucket.refilledAt; oldestKey = key; }
+        }
+        if (oldestKey === undefined) break;
+        rateLimitBuckets.delete(oldestKey);
       }
     }
     const bucket = rateLimitBuckets.get(clientKey) ?? { tokens: rateLimitBurst, refilledAt: now };
@@ -267,7 +295,7 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
     }
 
     const requestPath = (req.url ?? "/").split("?")[0];
-    if (requestPath !== "/healthz" && requestPath !== "/readyz" && !takeRateLimitToken(req.socket.remoteAddress ?? "unknown")) {
+    if (requestPath !== "/healthz" && requestPath !== "/readyz" && !takeRateLimitToken(rateLimitClientKey(req))) {
       res.setHeader("retry-after", "1");
       writeJson(res, 429, { error: "too many requests" });
       return;

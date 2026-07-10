@@ -42,8 +42,9 @@ loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
 
 - 异步 run、排队、取消/暂停/恢复、`clientRequestId` 幂等创建、SSE 事件流、浏览器 dashboard/workbench。
 - `--profile online-sandbox` 在线沙箱工具白名单;`--profile platform-readiness` 完整平台就绪检查(`GET /status`)。
-- **local executor 只用于 loopback 单人开发**。`serve` 拒绝认证或开 shell 的 local executor,除非显式传 `--allow-unsafe-local-executor`;非 loopback host + local executor 无条件拒绝,escape hatch 只在 loopback 下生效。共享部署一律用 Docker 或 Coder executor。
-- 默认开启按客户端 IP 的请求限流(`--rate-limit-rps 200`、`--rate-limit-burst 500`,`--rate-limit-rps 0` 关闭);`/healthz` `/readyz` 豁免。
+- **local executor 只用于 loopback 单人开发**。`--allow-unsafe-local-executor` 是有边界的逃生舱:对非 loopback host 永不生效;在 loopback 上仍拒绝唯一的跨租户 RCE——多租户 + `shell.exec` 共享同一宿主机同一进程用户且无沙箱(loopback bind 也可能被反代到公网,「loopback」不等于单用户)。多租户但不开 `shell.exec` 时只限 per-run 路径受控的 workspace 文件操作,仍放行。租户要跑命令一律用 Docker 或 Coder executor。
+- 跨租户的 `GET /status`、`GET /metrics` 只认运维启动时经 `--tenant-token`/`--tenant-key` 配的 key;租户经 `POST /tenants/:tenant/policy/api-keys` 自助创建的 key 拿不到平台级视图。
+- 默认开启按客户端 IP 的请求限流(`--rate-limit-rps 200`、`--rate-limit-burst 500`,`--rate-limit-rps 0` 关闭);`/healthz` `/readyz` 豁免。反代后设 `--rate-limit-trusted-proxy-hops <n>`,按真实客户端的 `X-Forwarded-For` 跳分桶而非共享代理 IP;默认 0(谁都不信、按 socket peer 分桶),因为 `X-Forwarded-For` 客户端可伪造。
 
 多实例部署用 Postgres(持久元数据/审计)+ Redis(租约/队列):
 

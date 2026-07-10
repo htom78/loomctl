@@ -97,6 +97,7 @@ export interface HarnessServeCliOptions {
   autoAbandonStaleRuns: boolean;
   rateLimitRps?: string;
   rateLimitBurst?: string;
+  rateLimitTrustedProxyHops?: string;
 }
 
 export interface HarnessControlPlanePreflightCliOptions {

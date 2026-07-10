@@ -82,14 +82,24 @@ loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
 - `--profile online-sandbox` — isolated executor profile with the online
   sandbox tool allowlist; `--profile platform-readiness` — full
   Coder/control-plane/LiteLLM/brain readiness checks in `GET /status`.
-- The local executor is for loopback, single-user development only. `serve`
-  rejects authenticated or shell-enabled local executor use unless you
-  explicitly pass `--allow-unsafe-local-executor`, and a non-loopback host with
-  the local executor is refused unconditionally — the escape hatch only applies
-  to loopback. Use the Docker or Coder executor for anything shared.
+- The local executor is for loopback, single-user development only.
+  `--allow-unsafe-local-executor` is a bounded escape hatch: it never applies to
+  a non-loopback host, and on loopback it still refuses the one cross-tenant RCE
+  — multiple tenants plus `shell.exec` sharing one host and process user with no
+  sandbox (a loopback bind can still be reverse-proxied to the internet, so
+  "loopback" is not proof of single-user). Multi-tenant without `shell.exec` is
+  limited to per-run path-guarded workspace file ops and stays allowed. Use the
+  Docker or Coder executor whenever tenants need to run commands.
+- The cross-tenant `GET /status` and `GET /metrics` views only accept keys the
+  operator configured at startup (`--tenant-token`/`--tenant-key`). Keys a
+  tenant self-issues via `POST /tenants/:tenant/policy/api-keys` never grant the
+  platform-wide view.
 - Per-client-IP request rate limiting is on by default (`--rate-limit-rps 200`,
   `--rate-limit-burst 500`; `--rate-limit-rps 0` disables). `/healthz` and
-  `/readyz` are exempt so probes keep working.
+  `/readyz` are exempt so probes keep working. Behind a reverse proxy, set
+  `--rate-limit-trusted-proxy-hops <n>` so limiting keys on the real client's
+  `X-Forwarded-For` hop instead of the shared proxy IP; it defaults to 0 (trust
+  nobody, key on the socket peer) because `X-Forwarded-For` is client-spoofable.
 
 For two or more instances, use PostgreSQL for durable metadata/audit and Redis
 for leases and queued-run claims:
