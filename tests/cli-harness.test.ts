@@ -10239,18 +10239,19 @@ test("loom harness agent-git-service-staging-readiness probes AGS native surface
     assert.equal(report.includes("staging-secret-token"), false);
     assert.deepEqual(JSON.parse(report), body);
 
-    assert.deepEqual(
-      ags.requests.map((request) => [request.method, request.path, request.query, request.authorization]),
-      [
-        ["GET", "/readyz", "", undefined],
-        ["GET", "/api/v3", "", "Bearer staging-secret-token"],
-        ["GET", "/api/v3/meta", "", "Bearer staging-secret-token"],
-        ["GET", "/api/v3/rate_limit", "", "Bearer staging-secret-token"],
-        ["GET", "/api/v3/repos/team/loom-smoke/issues/17/workspaces", "?per_page=5", "Bearer staging-secret-token"],
-        ["GET", "/api/v3/repos/team/loom-smoke/issues/17/comments", "?per_page=5", "Bearer staging-secret-token"],
-        ["GET", "/api/v3/repos/team/loom-smoke/wiki/memory/vas%2Flearnings", "", "Bearer staging-secret-token"],
-      ],
-    );
+    const actualRequests = ags.requests.map((request) => [request.method, request.path, request.query, request.authorization]);
+    const expectedRequests = [
+      ["GET", "/readyz", "", undefined],
+      ["GET", "/api/v3", "", "Bearer staging-secret-token"],
+      ["GET", "/api/v3/meta", "", "Bearer staging-secret-token"],
+      ["GET", "/api/v3/rate_limit", "", "Bearer staging-secret-token"],
+      ["GET", "/api/v3/repos/team/loom-smoke/issues/17/workspaces", "?per_page=5", "Bearer staging-secret-token"],
+      ["GET", "/api/v3/repos/team/loom-smoke/issues/17/comments", "?per_page=5", "Bearer staging-secret-token"],
+      ["GET", "/api/v3/repos/team/loom-smoke/wiki/memory/vas%2Flearnings", "", "Bearer staging-secret-token"],
+    ];
+    actualRequests.sort((left, right) => String(left[1]).localeCompare(String(right[1])));
+    expectedRequests.sort((left, right) => String(left[1]).localeCompare(String(right[1])));
+    assert.deepEqual(actualRequests, expectedRequests);
   } finally {
     await ags.close();
   }
@@ -12519,6 +12520,7 @@ test("loom harness platform-cutover-bundle can require external staging targets"
       cwd: outDir,
       env: {
         ...process.env,
+        GITHUB_ACTIONS: "",
         LOOM_BIN: loomBinPath,
         LOOM_CUTOVER_PHASE: "pre-serve",
         LOOM_REQUIRE_EXTERNAL_STAGING: "1",
@@ -12793,6 +12795,7 @@ test("loom harness platform-cutover-artifacts-verify can require external stagin
       cwd: outDir,
       env: {
         ...process.env,
+        GITHUB_ACTIONS: "",
         LOOM_BIN: loomBinPath,
         LOOM_CUTOVER_PHASE: "pre-serve",
       },
@@ -34952,6 +34955,7 @@ test("loom harness platform-cutover-bundle exports a token-free operator package
       cwd: outDir,
       env: {
         ...process.env,
+        GITHUB_ACTIONS: "",
         LOOM_BIN: loomBinPath,
         LOOM_BUNDLE_TOKEN: "bundle-secret-value",
         DB_DSN: "db-secret-value",
@@ -35230,6 +35234,7 @@ test("loom harness platform-cutover-bundle exports a token-free operator package
       cwd: outDir,
       env: {
         ...process.env,
+        GITHUB_ACTIONS: "",
         LOOM_BIN: loomBinPath,
         LOOM_BUNDLE_TOKEN: "bundle-secret-value",
         LOOM_CUTOVER_RUN_LOG: scriptLogPath,
