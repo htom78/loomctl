@@ -1265,8 +1265,9 @@ test("loom harness serve accepts agent-git-service as a serve-enabled candidate 
   const workspaceRoot = await tempDir("loom-cli-serve-agent-git-service-provider");
   const secretRoot = await tempDir("loom-cli-serve-agent-git-service-secrets");
   const result = await execa(
-    "npx",
+    process.execPath,
     [
+      "--import",
       "tsx",
       "src/index.ts",
       "harness",
@@ -8742,8 +8743,9 @@ test("loom harness serve rejects policy-backed tenant auth with local executor w
 test("loom harness serve online sandbox profile exposes the required tool allowlist", async () => {
   const workspaceRoot = await tempDir("loom-cli-serve-online-sandbox-profile");
   const result = await execa(
-    "npx",
+    process.execPath,
     [
+      "--import",
       "tsx",
       "src/index.ts",
       "harness",
@@ -8847,8 +8849,8 @@ test("loom harness serve rejects externally bound local executor without unsafe 
 test("loom harness serve lists the status endpoint", async () => {
   const workspaceRoot = await tempDir("loom-cli-serve-status");
   const result = await execa(
-    "npx",
-    ["tsx", "src/index.ts", "harness", "serve", "--workspace-root", workspaceRoot, "--host", "127.0.0.1", "--port", "0"],
+    process.execPath,
+    ["--import", "tsx", "src/index.ts", "harness", "serve", "--workspace-root", workspaceRoot, "--host", "127.0.0.1", "--port", "0"],
     { cwd: process.cwd(), reject: false, timeout: 5000 },
   );
 
@@ -8914,8 +8916,9 @@ test("loom harness serve uses tenant-scoped Gitea token envs", async () => {
   assert.ok(address);
 
   const server = execa(
-    "npx",
+    process.execPath,
     [
+      "--import",
       "tsx",
       "src/index.ts",
       "harness",
@@ -36426,8 +36429,9 @@ test("loom harness serve passes the operator cockpit queue backend to status", a
   const port = await freePort();
   const agentGitService = await startAgentGitServiceContractServer();
   const server = execa(
-    "npx",
+    process.execPath,
     [
+      "--import",
       "tsx",
       "src/index.ts",
       "harness",
@@ -36624,8 +36628,9 @@ test("loom harness serve passes tenant policy Coder template parameters when cre
 
   const port = await freePort();
   const server = execa(
-    "npx",
+    process.execPath,
     [
+      "--import",
       "tsx",
       "src/index.ts",
       "harness",
