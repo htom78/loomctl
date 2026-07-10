@@ -1232,7 +1232,7 @@ test("loom harness serve exposes workspace session limit options", async () => {
   const result = await execa(
     "npx",
     ["tsx", "src/index.ts", "harness", "serve", "--help"],
-    { cwd: process.cwd(), reject: false },
+    { cwd: process.cwd(), reject: false, maxBuffer: 20_000 },
   );
 
   assert.equal(result.exitCode, 0, result.stderr);
@@ -1242,6 +1242,13 @@ test("loom harness serve exposes workspace session limit options", async () => {
   assert.match(result.stdout, /--max-tenant-active-runs/);
   assert.match(result.stdout, /--workspace-session-idle-timeout-ms/);
   assert.match(result.stdout, /--run-lease-ttl-ms/);
+  assert.match(result.stdout, /--state-probe-interval-ms/);
+  assert.match(result.stdout, /--state-probe-timeout-ms/);
+  assert.match(result.stdout, /--state-probe-max-staleness-ms/);
+  assert.match(result.stdout, /--oidc-issuer/);
+  assert.match(result.stdout, /--oidc-audience/);
+  assert.match(result.stdout, /--oidc-jwks-url/);
+  assert.match(result.stdout, /--oidc-allow-insecure-http/);
   assert.match(result.stdout, /--auto-abandon-stale-runs/);
   assert.match(result.stdout, /--executor-cpus/);
   assert.match(result.stdout, /--executor-memory/);
@@ -4451,6 +4458,10 @@ test("loom harness doctor reports invalid serve numeric flags before serving", a
       "70000",
       "--workspace-command-timeout-ms",
       "0",
+      "--state-probe-timeout-ms",
+      "0",
+      "--state-probe-max-staleness-ms",
+      "300001",
       "--executor",
       "docker",
       "--executor-image",
@@ -4474,10 +4485,89 @@ test("loom harness doctor reports invalid serve numeric flags before serving", a
     invalidFlags: [
       { flag: "--port", message: "--port must be an integer between 0 and 65535" },
       { flag: "--workspace-command-timeout-ms", message: "--workspace-command-timeout-ms must be a positive integer." },
+      { flag: "--state-probe-timeout-ms", message: "--state-probe-timeout-ms must be an integer between 1 and 300000." },
+      { flag: "--state-probe-max-staleness-ms", message: "--state-probe-max-staleness-ms must be an integer between 1 and 300000." },
       { flag: "--executor-cpus", message: "--executor-cpus must be a positive number." },
       { flag: "--executor-pids-limit", message: "--executor-pids-limit must be a positive integer." },
     ],
   });
+});
+
+test("loom harness doctor validates OIDC SSO configuration without contacting the provider", async () => {
+  const workspaceRoot = await tempDir("loom-cli-doctor-invalid-oidc");
+  const result = await execa(
+    "npx",
+    [
+      "tsx",
+      "src/index.ts",
+      "harness",
+      "doctor",
+      "--workspace-root",
+      workspaceRoot,
+      "--executor",
+      "docker",
+      "--executor-image",
+      "loom-workspace:dev",
+      "--oidc-issuer",
+      "http://identity.example.test",
+      "--oidc-jwks-url",
+      "https://user:secret@identity.example.test/jwks",
+      "--oidc-clock-tolerance-seconds",
+      "301",
+      "--oidc-request-timeout-ms",
+      "99",
+    ],
+    { cwd: process.cwd(), reject: false, timeout: 5000 },
+  );
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stderr, "");
+  const body = JSON.parse(result.stdout);
+  assert.deepEqual(body.checks.serveFlagValidation.invalidFlags, [
+    { flag: "--oidc-issuer", message: "--oidc-issuer must be an absolute HTTPS URL without credentials or a fragment." },
+    { flag: "--oidc-audience", message: "--oidc-audience is required when OIDC is configured." },
+    { flag: "--oidc-jwks-url", message: "--oidc-jwks-url must be an absolute HTTPS URL without credentials or a fragment." },
+    { flag: "--oidc-clock-tolerance-seconds", message: "--oidc-clock-tolerance-seconds must be an integer between 0 and 300." },
+    { flag: "--oidc-request-timeout-ms", message: "--oidc-request-timeout-ms must be an integer between 100 and 30000." },
+  ]);
+  assert.equal(body.checks.identityProvider.configured, false);
+  assert.equal(JSON.stringify(body).includes("user:secret"), false);
+});
+
+test("loom harness doctor accepts OIDC as the online sandbox tenant identity source", async () => {
+  const workspaceRoot = await tempDir("loom-cli-doctor-oidc-ready");
+  const result = await execa(
+    "npx",
+    [
+      "tsx",
+      "src/index.ts",
+      "harness",
+      "doctor",
+      "--workspace-root",
+      workspaceRoot,
+      "--profile",
+      "online-sandbox",
+      "--executor",
+      "docker",
+      "--executor-image",
+      "loom-workspace:dev",
+      "--executor-home-root",
+      join(workspaceRoot, ".homes"),
+      "--oidc-issuer",
+      "https://identity.example.test",
+      "--oidc-audience",
+      "loom-harness",
+    ],
+    { cwd: process.cwd(), reject: false, timeout: 5000 },
+  );
+
+  assert.equal(result.exitCode, 0);
+  const body = JSON.parse(result.stdout);
+  assert.equal(body.checks.identityProvider.configured, true);
+  assert.equal(body.checks.identityProvider.mode, "discovery");
+  assert.equal(body.checks.tenantAuth.ok, true);
+  assert.equal(body.checks.tenantAuth.oidc, true);
+  assert.deepEqual(body.checks.tenantAuth.missingRoles, []);
 });
 
 test("loom harness doctor reports missing distributed state envs without leaking values", async () => {
@@ -10409,14 +10499,32 @@ test("loom harness platform-preflight aggregates doctor and external dependency 
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ version: "1.22.0" }));
   });
+  let oidcIssuer = "";
+  const oidcServer = createServer((req, res) => {
+    res.setHeader("content-type", "application/json");
+    if (req.url === "/.well-known/openid-configuration") {
+      res.end(JSON.stringify({ issuer: oidcIssuer, jwks_uri: `${oidcIssuer}/jwks` }));
+      return;
+    }
+    if (req.url === "/jwks") {
+      res.end(JSON.stringify({ keys: [{ kty: "RSA", kid: "preflight", alg: "RS256", use: "sig", n: "AQAB", e: "AQAB" }] }));
+      return;
+    }
+    res.writeHead(404).end(JSON.stringify({ error: "not found" }));
+  });
   await new Promise<void>((resolve) => modelServer.listen(0, "127.0.0.1", resolve));
   await new Promise<void>((resolve) => controlPlaneServer.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => oidcServer.listen(0, "127.0.0.1", resolve));
   const modelAddress = modelServer.address();
   const controlPlaneAddress = controlPlaneServer.address();
+  const oidcAddress = oidcServer.address();
   assert.equal(typeof modelAddress, "object");
   assert.equal(typeof controlPlaneAddress, "object");
+  assert.equal(typeof oidcAddress, "object");
   assert.ok(modelAddress);
   assert.ok(controlPlaneAddress);
+  assert.ok(oidcAddress);
+  oidcIssuer = `http://127.0.0.1:${oidcAddress.port}`;
 
   try {
     const result = await execa(
@@ -10485,6 +10593,11 @@ test("loom harness platform-preflight aggregates doctor and external dependency 
         "LOOM_TEST_PLATFORM_CONTROL_TOKEN",
         "--tenant-control-plane-token-env",
         "alice=LOOM_TEST_PLATFORM_CONTROL_TOKEN",
+        "--oidc-issuer",
+        oidcIssuer,
+        "--oidc-audience",
+        "loom-harness",
+        "--oidc-allow-insecure-http",
         "--tenant-key-env",
         "alice=LOOM_TEST_PLATFORM_ADMIN_TENANT_KEY:ops:admin",
         "--tenant-key-env",
@@ -10535,11 +10648,14 @@ test("loom harness platform-preflight aggregates doctor and external dependency 
     assert.equal(body.model.ok, true);
     assert.equal(body.controlPlane.ok, true);
     assert.equal(body.coder.ok, true);
+    assert.equal(body.identity.ready, true);
+    assert.equal(body.identity.issuer, oidcIssuer);
     assert.deepEqual(body.gates, {
       doctor: true,
       model: true,
       controlPlane: true,
       coder: true,
+      identity: true,
     });
     assert.deepEqual(body.nextCommandOrder, [
       "loom harness serve",
@@ -10619,7 +10735,63 @@ test("loom harness platform-preflight aggregates doctor and external dependency 
     await new Promise<void>((resolve, reject) =>
       controlPlaneServer.close((error) => (error ? reject(error) : resolve())),
     );
+    await new Promise<void>((resolve, reject) =>
+      oidcServer.close((error) => (error ? reject(error) : resolve())),
+    );
   }
+});
+
+test("loom harness platform-cutover-plan carries token-free OIDC configuration into serve argv", async () => {
+  const root = await tempDir("loom-cli-platform-cutover-oidc");
+  const result = await execa(
+    "npx",
+    [
+      "tsx",
+      "src/index.ts",
+      "harness",
+      "platform-cutover-plan",
+      "--workspace-root",
+      root,
+      "--tenant",
+      "alice",
+      "--project",
+      "proj-a",
+      "--oidc-issuer",
+      "https://identity.example.test",
+      "--oidc-audience",
+      "loom-harness",
+      "--oidc-jwks-url",
+      "https://identity.example.test/jwks",
+      "--oidc-tenant-claim",
+      "tenant",
+      "--oidc-actor-claim",
+      "email",
+      "--oidc-role-claim",
+      "role",
+    ],
+    { cwd: process.cwd(), reject: false },
+  );
+
+  const body = JSON.parse(result.stdout);
+  assert.deepEqual(body.externalEnvironment.systems.identityProvider, {
+    kind: "oidc",
+    issuer: "https://identity.example.test",
+    audience: "loom-harness",
+    jwksUrl: "https://identity.example.test/jwks",
+    tenantClaim: "tenant",
+    actorClaim: "email",
+    roleClaim: "role",
+    allowInsecureHttp: false,
+  });
+  for (const args of [body.platformPreflightCommandArgs, body.serveCommandArgs]) {
+    assert.ok(args.includes("--oidc-issuer"));
+    assert.ok(args.includes("https://identity.example.test"));
+    assert.ok(args.includes("--oidc-audience"));
+    assert.ok(args.includes("loom-harness"));
+    assert.ok(args.includes("--oidc-jwks-url"));
+    assert.ok(args.includes("https://identity.example.test/jwks"));
+  }
+  assert.equal(JSON.stringify(body).includes("Bearer"), false);
 });
 
 test("loom harness platform-cutover-plan emits token-free operator argv", async () => {

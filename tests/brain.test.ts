@@ -116,6 +116,8 @@ test("brain propose can publish weak-skill branches through a review hook", asyn
   assert.match(proposals[0].pullRequestBody, /handoffPackage https:\/\/review\.example\/custom\/handoff\/run-4/);
   assert.match(proposals[0].pullRequestBody, /followupRuns https:\/\/review\.example\/custom\/followups\/run-4/);
   assert.match(proposals[0].pullRequestBody, /modelUsage requests=2 prompt=31 completion=16 total=47 costUsd=0\.0047/);
+  assert.match(proposals[0].pullRequestBody, /晋级门槛/);
+  assert.match(proposals[0].pullRequestBody, /loom brain benchmark --input <manifest> --report <report>/);
   assert.match(proposals[0].pullRequestBody, /reviewSummary https:\/\/loom\.example\/tenants\/alice\/runs\/run-3\/review-summary\?project=proj-a/);
   assert.match(proposals[0].pullRequestBody, /handoffPackage https:\/\/loom\.example\/tenants\/alice\/runs\/run-3\/handoff-package\?project=proj-a/);
   assert.match(proposals[0].pullRequestBody, /followupRuns https:\/\/loom\.example\/tenants\/alice\/runs\/run-3\/handoff-runs\?project=proj-a/);

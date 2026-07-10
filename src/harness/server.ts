@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, type Dirent } from "node:fs";
 import { appendFile, chmod, mkdir, open, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -27,6 +27,23 @@ import { makeRunId, runHarness, type RunPauseRequest, type RunRequester } from "
 import { createOpenAiCompatibleAgent, type ModelAgentProtocol } from "./model-agent.js";
 import { appendRunEvent, readRunEvents } from "./run-store.js";
 import { dispatchHarnessServerRoutes, type HarnessServerRouteCandidate } from "./server-routes.js";
+import {
+  createStateBackendHealthMonitor,
+  formatPrometheusMetrics,
+  type StateBackendHealthSnapshot,
+} from "./server-observability.js";
+import {
+  createOidcAuthenticator,
+  sanitizeTenantApiKey,
+  tenantApiKeyIsActive,
+  tenantApiKeyMatches,
+  type OidcAuthConfig,
+  type OidcAuthenticator,
+  type OidcHealthSnapshot,
+  type SanitizedTenantApiKey,
+  type TenantApiKey,
+} from "./server-auth.js";
+import { createTenantApiKeyRouteHandlers, parseTenantPolicyApiKeys } from "./server-api-keys.js";
 import {
   readQueuedRunSnapshot as loadQueuedRunSnapshot,
   readRunState as loadRunState,
@@ -110,6 +127,8 @@ export interface HarnessServerOptions {
   allowedTools?: string[];
   tenantTokens?: Record<string, string>;
   tenantApiKeys?: Record<string, TenantApiKey[]>;
+  oidcAuth?: OidcAuthConfig;
+  oidcAuthenticator?: OidcAuthenticator;
   controlPlaneAgentIdentity?: ControlPlaneAgentIdentityConfig;
   createExecutor?: (cwd: string, context: HarnessWorkspaceContext) => WorkspaceExecutor;
   runWorkspaceIsolation?: RunWorkspaceIsolation;
@@ -147,6 +166,9 @@ export interface HarnessServerOptions {
   agentGitServiceTokenSecretRoot?: string;
   stateBackend?: PlatformStateBackend;
   instanceId?: string;
+  stateDependencyProbeIntervalMs?: number;
+  stateDependencyProbeTimeoutMs?: number;
+  stateDependencyProbeMaxStalenessMs?: number;
 }
 
 export interface PullRequestReporterResult {
@@ -230,13 +252,7 @@ interface ControlPlaneDiscoveryStatus {
   tenantResults?: ControlPlaneDiscoveryTenantStatus[];
 }
 
-export interface TenantApiKey {
-  token?: string;
-  tokenHash?: string;
-  actor: string;
-  role: TenantRole;
-  modelKeyEnv?: string;
-}
+export type { OidcAuthConfig, TenantApiKey } from "./server-auth.js";
 
 export interface TenantControlPlaneIdentity {
   provider: string;
@@ -296,20 +312,6 @@ interface TenantPolicySettingsRequestBody {
   executorTemplateParameters?: unknown;
   limits?: unknown;
   allowedTools?: unknown;
-  clientId?: unknown;
-}
-
-interface TenantPolicyApiKeyCreateRequestBody {
-  actor?: unknown;
-  role?: unknown;
-  modelKeyEnv?: unknown;
-  token?: unknown;
-  clientId?: unknown;
-}
-
-interface TenantPolicyApiKeyRevokeRequestBody {
-  actor?: unknown;
-  role?: unknown;
   clientId?: unknown;
 }
 
@@ -521,7 +523,7 @@ interface TenantPolicyLimitsChange {
 
 interface SanitizedTenantPolicy {
   schemaVersion: 1;
-  apiKeys?: Array<{ actor: string; role: TenantRole; modelKeyEnv?: string }>;
+  apiKeys?: SanitizedTenantApiKey[];
   controlPlaneIdentities?: SanitizedTenantControlPlaneIdentity[];
   modelKeyEnv?: string;
   executorTemplateParameters?: string[];
@@ -1491,6 +1493,7 @@ interface HarnessServerStatus {
     runCreateIdempotency: RunCreateIdempotencyStatus;
     concurrencyAdmission: HarnessConcurrencyAdmissionStatus;
     stateBackend: HarnessStateBackendStatus;
+    identity?: HarnessIdentityStatus;
   };
   readiness: HarnessProfileReadiness;
   limits: {
@@ -1558,6 +1561,7 @@ interface HarnessProfileReadiness {
       roles: Record<TenantRole, boolean>;
       missingRoles: TenantRole[];
       legacyTokens: boolean;
+      oidc?: boolean;
     };
     model: {
       required: boolean;
@@ -1684,6 +1688,7 @@ interface TenantHarnessServerStatus {
     runCreateIdempotency: RunCreateIdempotencyStatus;
     concurrencyAdmission: HarnessConcurrencyAdmissionStatus;
     stateBackend: HarnessStateBackendStatus;
+    identity?: HarnessIdentityStatus;
   };
   readiness: HarnessProfileReadiness;
   visionLock: HarnessVisionLock;
@@ -1707,6 +1712,11 @@ interface HarnessStateBackendStatus {
   metadata: "filesystem" | "postgresql";
   coordination: "filesystem" | "redis";
   distributed: boolean;
+  health?: StateBackendHealthSnapshot;
+}
+
+interface HarnessIdentityStatus {
+  oidc?: OidcHealthSnapshot;
 }
 
 interface TenantResourceStatus {
@@ -4427,6 +4437,8 @@ async function harnessServerStatus(
   activeSessions: Map<string, ActiveWorkspaceSession>,
   queueRecovery: QueueRecoveryAudit,
   staleRunCleanup: StaleRunCleanupAudit,
+  stateBackendHealth?: StateBackendHealthSnapshot,
+  oidcHealth?: OidcHealthSnapshot,
 ): Promise<HarnessServerStatus> {
   const activeSessionDetails = await statusActiveWorkspaceSessionDetails(workspaceRoot, options, activeSessions);
   const activeRunDetails = await statusActiveRunDetails(workspaceRoot, options, activeRunSlots);
@@ -4442,7 +4454,8 @@ async function harnessServerStatus(
       runWorkspaceIsolation: runWorkspaceIsolation(options),
       runCreateIdempotency: runCreateIdempotencyStatus(),
       concurrencyAdmission: await harnessConcurrencyAdmissionStatus(options),
-      stateBackend: harnessStateBackendStatus(options),
+      stateBackend: harnessStateBackendStatus(options, stateBackendHealth),
+      identity: oidcHealth ? { oidc: oidcHealth } : undefined,
     },
     readiness: await harnessProfileReadiness(workspaceRoot, options, allowedTools, undefined, controlPlaneDiscovery),
     limits: harnessServerLimits(options),
@@ -4466,13 +4479,14 @@ async function harnessServerStatus(
   };
 }
 
-function harnessStateBackendStatus(options: HarnessServerOptions): HarnessStateBackendStatus {
+function harnessStateBackendStatus(options: HarnessServerOptions, health?: StateBackendHealthSnapshot): HarnessStateBackendStatus {
   if (options.stateBackend?.kind === "postgres-redis") {
     return {
       kind: "postgres-redis",
       metadata: "postgresql",
       coordination: "redis",
       distributed: true,
+      health,
     };
   }
   return {
@@ -4649,6 +4663,7 @@ async function harnessTenantServerStatus(
       runCreateIdempotency: runCreateIdempotencyStatus(),
       concurrencyAdmission: await harnessConcurrencyAdmissionStatus(options, tenant),
       stateBackend: harnessStateBackendStatus(options),
+      identity: options.oidcAuthenticator ? { oidc: await options.oidcAuthenticator.ensureReady() } : undefined,
     },
     readiness: await harnessProfileReadiness(workspaceRoot, options, allowedTools, tenant, controlPlaneDiscovery),
     visionLock: HARNESS_VISION_LOCK,
@@ -5012,6 +5027,7 @@ function requireSafeLocalExecutorOptions(options: HarnessServerOptions, allowedT
 function hasTenantAuth(options: HarnessServerOptions): boolean {
   return Object.keys(options.tenantTokens ?? {}).length > 0 ||
     Object.values(options.tenantApiKeys ?? {}).some((keys) => keys.length > 0) ||
+    Boolean(options.oidcAuth || options.oidcAuthenticator) ||
     hasPolicyTenantAuth(options.workspaceRoot);
 }
 
@@ -5284,8 +5300,14 @@ async function tenantAuthReadiness(
   const policyKeys = tenantScope
     ? (await readTenantPolicy(workspaceRoot, tenantScope, options))?.apiKeys ?? []
     : await policyStatusAccessKeys(workspaceRoot, options);
-  for (const key of [...configuredKeys, ...policyKeys]) {
+  for (const key of [...configuredKeys, ...policyKeys].filter((entry) => tenantApiKeyIsActive(entry))) {
     roles[key.role] = true;
+  }
+  const oidc = Boolean(options.oidcAuth || options.oidcAuthenticator);
+  if (oidc) {
+    roles.admin = true;
+    roles.developer = true;
+    roles.viewer = true;
   }
   const missingRoles = ONLINE_SANDBOX_REQUIRED_TENANT_ROLES.filter((role) => !roles[role]);
   return {
@@ -5295,6 +5317,7 @@ async function tenantAuthReadiness(
     legacyTokens: tenantScope
       ? Boolean(options.tenantTokens?.[tenantScope])
       : Object.keys(options.tenantTokens ?? {}).length > 0,
+    oidc: oidc || undefined,
   };
 }
 
@@ -5309,9 +5332,28 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
   const runPresence: RunPresenceRegistry = new Map();
   const projectPresence: RunPresenceRegistry = new Map();
   const queuedRuns: QueuedRun[] = [];
-  const serverOptions = { ...options, workspaceRoot, allowedTools, instanceId: options.instanceId ?? randomUUID() };
+  const oidcAuthenticator = options.oidcAuthenticator ?? (options.oidcAuth ? createOidcAuthenticator(options.oidcAuth) : undefined);
+  const serverOptions = { ...options, workspaceRoot, allowedTools, instanceId: options.instanceId ?? randomUUID(), oidcAuthenticator };
+  const stateBackendHealth = serverOptions.stateBackend
+    ? createStateBackendHealthMonitor(serverOptions.stateBackend, {
+        probeIntervalMs: serverOptions.stateDependencyProbeIntervalMs,
+        probeTimeoutMs: serverOptions.stateDependencyProbeTimeoutMs,
+        maxStalenessMs: serverOptions.stateDependencyProbeMaxStalenessMs,
+      })
+    : undefined;
+  stateBackendHealth?.start();
+  void oidcAuthenticator?.ensureReady();
   const startedAt = new Date().toISOString();
   const appendAuditEvent = createTenantAuditAppender(workspaceRoot, options.stateBackend?.events);
+  const tenantApiKeyRoutes = createTenantApiKeyRouteHandlers<TenantPolicy>({
+    requireTenant: (value) => requireSafeName(value, "tenant"),
+    requireAdmin: (req, tenant, url) => requireTenantAccess(req, tenant, serverOptions, url, "admin"),
+    readPolicy: (tenant) => readTenantPolicy(workspaceRoot, tenant, serverOptions),
+    writePolicy: (tenant, policy) => writeTenantPolicy(workspaceRoot, tenant, policy, serverOptions),
+    configuredKeys: (tenant) => serverOptions.tenantApiKeys?.[tenant] ?? [],
+    readBody: (req) => readJsonBody<unknown>(req),
+    appendAuditEvent,
+  });
   const operatorCockpitQueueBackend = createOperatorCockpitQueueBackend(serverOptions);
   const operatorCockpitExecutionQueue: OperatorCockpitExecutionQueueItem[] = [];
   let lastOperatorCockpitQueuedExecution: OperatorCockpitQueuedExecutionSummary | undefined;
@@ -5450,7 +5492,13 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
       }
 
       if (req.method === "GET" && url.pathname === "/readyz") {
-        const readiness = serverReadiness(startedAt, queueRecovery, staleRunCleanup);
+        const readiness = serverReadiness(
+          startedAt,
+          queueRecovery,
+          staleRunCleanup,
+          await stateBackendHealth?.ensureFresh(),
+          await oidcAuthenticator?.ensureReady(),
+        );
         writeJson(res, readiness.ready ? 200 : 503, readiness);
         return;
       }
@@ -5466,13 +5514,15 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
           activeSessions,
           queueRecovery,
           staleRunCleanup,
+          await stateBackendHealth?.ensureFresh(),
+          await oidcAuthenticator?.ensureReady(),
         ));
         return;
       }
 
       if (req.method === "GET" && url.pathname === "/status") {
         await requireServerStatusAccess(req, workspaceRoot, serverOptions, url);
-        writeJson(res, 200, await harnessServerStatus(workspaceRoot, serverOptions, startedAt, allowedTools, activeRunSlots, activeWorkspaces, queuedRuns, activeSessions, queueRecovery, staleRunCleanup));
+        writeJson(res, 200, await harnessServerStatus(workspaceRoot, serverOptions, startedAt, allowedTools, activeRunSlots, activeWorkspaces, queuedRuns, activeSessions, queueRecovery, staleRunCleanup, await stateBackendHealth?.ensureFresh(), await oidcAuthenticator?.ensureReady()));
         return;
       }
 
@@ -5485,8 +5535,9 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
         const routes: HarnessServerRouteCandidate[] = [
           { domain: "control-plane", name: "issue-comment-webhook", handle: () => handleGiteaIssueCommentWebhook(url, req, res, workspaceRoot, serverOptions, activeRuns, activeRunSlots, activeWorkspaces, activeSessions, queuedRuns, scheduleQueuedRuns, appendAuditEvent) },
           { domain: "policy", name: "brain-signal-create", handle: () => handleCreateBrainSignal(url, req, res, serverOptions, appendAuditEvent) },
-          { domain: "policy", name: "api-key-revoke", handle: () => handleRevokeTenantPolicyApiKey(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
-          { domain: "policy", name: "api-key-create", handle: () => handleCreateTenantPolicyApiKey(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
+          { domain: "policy", name: "api-key-rotate", handle: () => tenantApiKeyRoutes.rotate(url, req, res) },
+          { domain: "policy", name: "api-key-revoke", handle: () => tenantApiKeyRoutes.revoke(url, req, res) },
+          { domain: "policy", name: "api-key-create", handle: () => tenantApiKeyRoutes.create(url, req, res) },
           { domain: "policy", name: "settings-update", handle: () => handleUpdateTenantPolicySettings(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
           { domain: "control-plane", name: "restore-dry-run", handle: () => handleTenantControlPlaneRestoreDryRun(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
           { domain: "control-plane", name: "ags-provisioning-plan-apply", handle: () => handleApplyTenantAgentGitServiceProvisioningPlan(url, req, res, workspaceRoot, serverOptions, appendAuditEvent) },
@@ -5609,6 +5660,7 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
   });
   server.once("close", () => {
     closing = true;
+    stateBackendHealth?.stop();
     if (distributedQueuePoll) clearInterval(distributedQueuePoll);
     queuedRunDrainRequested = false;
     queuedRuns.splice(0);
@@ -5641,16 +5693,40 @@ function serverReadiness(
   startedAt: string,
   queueRecovery: QueueRecoveryAudit,
   staleRunCleanup: StaleRunCleanupAudit,
-): { ready: boolean; startedAt: string; uptimeMs: number; checks: { queueRecovery: string; staleRunCleanup: string } } {
-  const checks = {
+  stateBackendHealth?: StateBackendHealthSnapshot,
+  oidcHealth?: OidcHealthSnapshot,
+): {
+  ready: boolean;
+  startedAt: string;
+  uptimeMs: number;
+  checks: { queueRecovery: string; staleRunCleanup: string; stateBackend?: string; oidc?: string };
+  stateBackend?: StateBackendHealthSnapshot;
+  oidc?: OidcHealthSnapshot;
+} {
+  const checks: { queueRecovery: string; staleRunCleanup: string; stateBackend?: string; oidc?: string } = {
     queueRecovery: queueRecovery.status,
     staleRunCleanup: staleRunCleanup.status,
   };
+  if (stateBackendHealth) {
+    checks.stateBackend = stateBackendHealth.ok
+      ? "ready"
+      : stateBackendHealth.pending
+        ? "pending"
+        : stateBackendHealth.stale
+          ? "stale"
+          : "unavailable";
+  }
+  if (oidcHealth) checks.oidc = oidcHealth.ready ? "ready" : oidcHealth.failureKind ?? "pending";
   return {
-    ready: checks.queueRecovery === "completed" && (checks.staleRunCleanup === "completed" || checks.staleRunCleanup === "disabled"),
+    ready: checks.queueRecovery === "completed" &&
+      (checks.staleRunCleanup === "completed" || checks.staleRunCleanup === "disabled") &&
+      (stateBackendHealth?.ok ?? true) &&
+      (oidcHealth?.ready ?? true),
     startedAt,
     uptimeMs: Math.max(0, Date.now() - Date.parse(startedAt)),
     checks,
+    stateBackend: stateBackendHealth,
+    oidc: oidcHealth,
   };
 }
 
@@ -5663,24 +5739,54 @@ async function serverMetrics(
   activeSessions: Map<string, ActiveWorkspaceSession>,
   queueRecovery: QueueRecoveryAudit,
   staleRunCleanup: StaleRunCleanupAudit,
+  stateBackendHealth?: StateBackendHealthSnapshot,
+  oidcHealth?: OidcHealthSnapshot,
 ): Promise<string> {
-  const readiness = serverReadiness(startedAt, queueRecovery, staleRunCleanup);
+  const readiness = serverReadiness(startedAt, queueRecovery, staleRunCleanup, stateBackendHealth, oidcHealth);
   const activeRunDetails = await statusActiveRunDetails(workspaceRoot, options, activeRunSlots);
   const activeSessionDetails = await statusActiveWorkspaceSessionDetails(workspaceRoot, options, activeSessions);
   const orphanedRuns = await orphanedRunningRunResourceStatuses(workspaceRoot, activeRunDetails);
   const operationalBacklog = await metricsOperationalBacklog(workspaceRoot, options);
-  return prometheusMetrics([
-    ["loom_harness_ready", "Whether the harness server readiness probe is ready.", readiness.ready ? 1 : 0],
-    ["loom_harness_active_runs", "Active harness runs across the shared workspace root.", activeRunDetails.length],
-    ["loom_harness_queued_runs", "Queued harness runs held in this server queue.", queuedRuns.length],
-    ["loom_harness_active_workspace_sessions", "Active workspace terminal sessions across the shared workspace root.", activeSessionDetails.length],
-    ["loom_harness_orphaned_running_runs", "Persisted running runs without a live admission claim.", orphanedRuns.length],
-    ["loom_harness_review_required_runs", "Runs currently waiting for human review.", operationalBacklog.reviewRequiredRuns],
-    ["loom_harness_deployment_required_runs", "Runs currently waiting for deployment approval.", operationalBacklog.deploymentRequiredRuns],
-    ["loom_harness_model_usage_warning_projects", "Tenant projects currently above model usage warning thresholds.", operationalBacklog.modelUsageWarningProjects],
-    ["loom_harness_workspace_usage_warning_projects", "Tenant projects currently above workspace usage warning thresholds.", operationalBacklog.workspaceUsageWarningProjects],
-    ["loom_harness_queue_recovery_completed", "Whether startup queued-run recovery completed.", queueRecovery.status === "completed" ? 1 : 0],
-    ["loom_harness_stale_run_cleanup_ready", "Whether stale-run cleanup is completed or disabled.", staleRunCleanup.status === "completed" || staleRunCleanup.status === "disabled" ? 1 : 0],
+  const metadataHealth = stateBackendHealth?.dependencies.find((dependency) => dependency.name === "metadata");
+  const coordinationHealth = stateBackendHealth?.dependencies.find((dependency) => dependency.name === "coordination");
+  const oldestQueuedAt = queuedRuns.reduce<number | undefined>((oldest, run) => {
+    const queuedAt = Date.parse(run.status.queuedAt);
+    if (!Number.isFinite(queuedAt)) return oldest;
+    return oldest === undefined ? queuedAt : Math.min(oldest, queuedAt);
+  }, undefined);
+  const queueOldestAgeSeconds = oldestQueuedAt === undefined ? 0 : Math.max(0, (Date.now() - oldestQueuedAt) / 1_000);
+  const tenantRunLimit = options.maxTenantActiveRuns;
+  const activeRunCapacityUtilization = tenantRunLimit && tenantRunLimit > 0
+    ? Math.max(0, ...tenantResourceStatuses(activeRunDetails, queuedRuns, activeSessionDetails)
+      .map((tenant) => tenant.activeRuns / tenantRunLimit))
+    : 0;
+  const sessionLimit = options.maxWorkspaceSessions ?? DEFAULT_MAX_WORKSPACE_SESSIONS;
+  const sessionCapacityUtilization = sessionLimit > 0 ? activeSessionDetails.length / sessionLimit : 0;
+  return formatPrometheusMetrics([
+    { name: "loom_harness_ready", help: "Whether the harness server readiness probe is ready.", value: readiness.ready ? 1 : 0 },
+    { name: "loom_harness_active_runs", help: "Active harness runs across the shared workspace root.", value: activeRunDetails.length },
+    { name: "loom_harness_queued_runs", help: "Queued harness runs held in this server queue.", value: queuedRuns.length },
+    { name: "loom_harness_queue_oldest_age_seconds", help: "Age of the oldest queued run in seconds.", value: queueOldestAgeSeconds },
+    { name: "loom_harness_active_workspace_sessions", help: "Active workspace terminal sessions across the shared workspace root.", value: activeSessionDetails.length },
+    { name: "loom_harness_orphaned_running_runs", help: "Persisted running runs without a live admission claim.", value: orphanedRuns.length },
+    { name: "loom_harness_expired_run_leases", help: "Persisted running runs whose admission lease has expired.", value: orphanedRuns.filter((run) => run.stale).length },
+    { name: "loom_harness_review_required_runs", help: "Runs currently waiting for human review.", value: operationalBacklog.reviewRequiredRuns },
+    { name: "loom_harness_deployment_required_runs", help: "Runs currently waiting for deployment approval.", value: operationalBacklog.deploymentRequiredRuns },
+    { name: "loom_harness_model_usage_warning_projects", help: "Tenant projects currently above model usage warning thresholds.", value: operationalBacklog.modelUsageWarningProjects },
+    { name: "loom_harness_workspace_usage_warning_projects", help: "Tenant projects currently above workspace usage warning thresholds.", value: operationalBacklog.workspaceUsageWarningProjects },
+    { name: "loom_harness_queue_recovery_completed", help: "Whether startup queued-run recovery completed.", value: queueRecovery.status === "completed" ? 1 : 0 },
+    { name: "loom_harness_queue_recovery_failures", help: "Queued runs that failed startup recovery.", value: queueRecovery.failedQueuedRuns },
+    { name: "loom_harness_stale_run_cleanup_ready", help: "Whether stale-run cleanup is completed or disabled.", value: staleRunCleanup.status === "completed" || staleRunCleanup.status === "disabled" ? 1 : 0 },
+    { name: "loom_harness_tenant_run_capacity_utilization", help: "Highest tenant active-run capacity utilization ratio.", value: activeRunCapacityUtilization },
+    { name: "loom_harness_workspace_session_capacity_utilization", help: "Global workspace-session capacity utilization ratio.", value: sessionCapacityUtilization },
+    { name: "loom_harness_state_backend_ready", help: "Whether all configured state backend dependencies are healthy.", value: (stateBackendHealth?.ok ?? true) ? 1 : 0 },
+    { name: "loom_harness_oidc_ready", help: "Whether the configured OIDC discovery and JWKS endpoints are ready.", value: (oidcHealth?.ready ?? true) ? 1 : 0 },
+    { name: "loom_harness_metadata_dependency_up", help: "Whether the metadata dependency probe succeeds.", value: metadataHealth?.ok === false ? 0 : 1 },
+    { name: "loom_harness_metadata_dependency_probe_latency_ms", help: "Latest metadata dependency probe latency in milliseconds.", value: metadataHealth?.latencyMs ?? 0 },
+    { name: "loom_harness_metadata_dependency_probe_failures_total", help: "Metadata dependency probe failures since server start.", value: metadataHealth?.failureCount ?? 0, type: "counter" },
+    { name: "loom_harness_coordination_dependency_up", help: "Whether the coordination dependency probe succeeds.", value: coordinationHealth?.ok === false ? 0 : 1 },
+    { name: "loom_harness_coordination_dependency_probe_latency_ms", help: "Latest coordination dependency probe latency in milliseconds.", value: coordinationHealth?.latencyMs ?? 0 },
+    { name: "loom_harness_coordination_dependency_probe_failures_total", help: "Coordination dependency probe failures since server start.", value: coordinationHealth?.failureCount ?? 0, type: "counter" },
   ]);
 }
 
@@ -5712,16 +5818,6 @@ async function metricsOperationalBacklog(workspaceRoot: string, options: Harness
   }
 
   return backlog;
-}
-
-function prometheusMetrics(metrics: Array<[string, string, number]>): string {
-  const lines: string[] = [];
-  for (const [name, help, value] of metrics) {
-    lines.push(`# HELP ${name} ${help}`);
-    lines.push(`# TYPE ${name} gauge`);
-    lines.push(`${name} ${value}`);
-  }
-  return `${lines.join("\n")}\n`;
 }
 
 async function handleListTenantPolicyEscalations(
@@ -8079,101 +8175,6 @@ async function handleUpdateTenantPolicy(
     policyChange,
   }), access);
   writeJson(res, 200, sanitizeTenantPolicy(policy));
-  return true;
-}
-
-async function handleCreateTenantPolicyApiKey(
-  url: URL,
-  req: IncomingMessage,
-  res: ServerResponse,
-  workspaceRoot: string,
-  options: HarnessServerOptions,
-  appendAuditEvent: TenantAuditAppender,
-): Promise<boolean> {
-  const segments = url.pathname.split("/").filter(Boolean);
-  if (segments.length !== 4) return false;
-  if (segments[0] !== "tenants" || segments[2] !== "policy" || segments[3] !== "api-keys") return false;
-
-  const tenant = requireSafeName(segments[1], "tenant");
-  const access = await requireTenantAccess(req, tenant, options, url, "admin");
-  const body = tenantPolicyApiKeyCreateFromUnknown(await readTenantPolicyApiKeyCreateJson(req));
-  const clientId = optionalClientId(body.clientId);
-  const { apiKey, token } = tenantPolicyApiKeyFromCreateBody(body);
-  const existing = await readTenantPolicy(workspaceRoot, tenant, options);
-  const currentKeys = existing?.apiKeys ?? [];
-  const duplicate = [...(options.tenantApiKeys?.[tenant] ?? []), ...currentKeys]
-    .some((key) => tenantApiKeyMatches(key, token));
-  if (duplicate) {
-    throw badRequest("tenant API key token already exists.");
-  }
-
-  const policy = compactObject({
-    ...(existing ?? { schemaVersion: 1 as const }),
-    schemaVersion: 1 as const,
-    apiKeys: [...currentKeys, apiKey],
-  });
-  await writeTenantPolicy(workspaceRoot, tenant, policy, options);
-  await appendAuditEvent(tenant, "tenant_api_key_created", compactObject({
-    actor: apiKey.actor,
-    keyRole: apiKey.role,
-    modelKeyEnv: apiKey.modelKeyEnv,
-    createdApiKey: sanitizeTenantApiKey(apiKey),
-    apiKeysBefore: sanitizeTenantApiKeys(currentKeys),
-    apiKeysAfter: sanitizeTenantApiKeys(policy.apiKeys),
-    apiKeyCount: policy.apiKeys?.length ?? 0,
-    clientId,
-  }), access);
-  writeJson(res, 201, {
-    apiKey: sanitizeTenantApiKey(apiKey),
-    token,
-    policy: sanitizeTenantPolicy(policy),
-  });
-  return true;
-}
-
-async function handleRevokeTenantPolicyApiKey(
-  url: URL,
-  req: IncomingMessage,
-  res: ServerResponse,
-  workspaceRoot: string,
-  options: HarnessServerOptions,
-  appendAuditEvent: TenantAuditAppender,
-): Promise<boolean> {
-  const segments = url.pathname.split("/").filter(Boolean);
-  if (segments.length !== 5) return false;
-  if (segments[0] !== "tenants" || segments[2] !== "policy" || segments[3] !== "api-keys" || segments[4] !== "revoke") return false;
-
-  const tenant = requireSafeName(segments[1], "tenant");
-  const access = await requireTenantAccess(req, tenant, options, url, "admin");
-  const body = tenantPolicyApiKeyRevokeFromUnknown(await readTenantPolicyApiKeyRevokeJson(req));
-  const clientId = optionalClientId(body.clientId);
-  const actor = tenantPolicyApiKeyActor(body.actor);
-  const role = body.role === undefined ? undefined : tenantPolicyRole(body.role, "role");
-  const existing = await readTenantPolicy(workspaceRoot, tenant, options);
-  const currentKeys = existing?.apiKeys ?? [];
-  const revokedApiKeys = currentKeys.filter((key) => key.actor === actor && (role === undefined || key.role === role));
-  const apiKeys = currentKeys.filter((key) => key.actor !== actor || (role !== undefined && key.role !== role));
-  const revoked = currentKeys.length - apiKeys.length;
-  const policy = compactObject({
-    ...(existing ?? { schemaVersion: 1 as const }),
-    schemaVersion: 1 as const,
-    apiKeys,
-  });
-  await writeTenantPolicy(workspaceRoot, tenant, policy, options);
-  await appendAuditEvent(tenant, "tenant_api_key_revoked", compactObject({
-    actor,
-    keyRole: role,
-    revoked,
-    revokedApiKeys: sanitizeTenantApiKeys(revokedApiKeys),
-    apiKeysBefore: sanitizeTenantApiKeys(currentKeys),
-    apiKeysAfter: sanitizeTenantApiKeys(policy.apiKeys),
-    apiKeyCount: policy.apiKeys?.length ?? 0,
-    clientId,
-  }), access);
-  writeJson(res, 200, {
-    revoked,
-    policy: sanitizeTenantPolicy(policy),
-  });
   return true;
 }
 
@@ -19505,7 +19506,7 @@ function tenantPolicyFromUnknown(value: unknown): TenantPolicy {
   }
   return compactObject({
     schemaVersion: 1 as const,
-    apiKeys: tenantPolicyApiKeys(input.apiKeys),
+    apiKeys: parseTenantPolicyApiKeys(input.apiKeys),
     controlPlaneIdentities: tenantPolicyControlPlaneIdentities(input.controlPlaneIdentities),
     modelKeyEnv: input.modelKeyEnv === undefined ? undefined : envNameValue(input.modelKeyEnv, "modelKeyEnv"),
     executorTemplateParameters: input.executorTemplateParameters === undefined
@@ -19513,31 +19514,6 @@ function tenantPolicyFromUnknown(value: unknown): TenantPolicy {
       : tenantPolicyTemplateParameters(input.executorTemplateParameters),
     limits: tenantPolicyLimits(input.limits),
     allowedTools: input.allowedTools === undefined ? undefined : [...new Set(stringArray(input.allowedTools, "allowedTools"))],
-  });
-}
-
-function tenantPolicyApiKeys(value: unknown): TenantApiKey[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value)) {
-    throw badRequest("apiKeys must be an array.");
-  }
-  return value.map((entry, index) => {
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      throw badRequest(`apiKeys[${index}] must be an object.`);
-    }
-    const key = entry as Record<string, unknown>;
-    const role = tenantPolicyRole(key.role, `apiKeys[${index}].role`);
-    const token = key.token === undefined ? undefined : tenantPolicyApiToken(key.token);
-    const tokenHash = key.tokenHash === undefined ? undefined : tenantPolicyApiTokenHash(key.tokenHash, `apiKeys[${index}].tokenHash`);
-    if (!token && !tokenHash) {
-      throw badRequest(`apiKeys[${index}].token or apiKeys[${index}].tokenHash is required.`);
-    }
-    return {
-      tokenHash: tokenHash ?? hashTenantApiToken(token as string),
-      actor: requireString(key.actor, `apiKeys[${index}].actor`),
-      role,
-      modelKeyEnv: key.modelKeyEnv === undefined ? undefined : envNameValue(key.modelKeyEnv, `apiKeys[${index}].modelKeyEnv`),
-    };
   });
 }
 
@@ -19577,72 +19553,12 @@ function tenantPolicyControlPlaneIdentityActor(value: unknown, field: string): s
   return actor;
 }
 
-function tenantPolicyApiKeyCreateFromUnknown(value: unknown): TenantPolicyApiKeyCreateRequestBody {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw badRequest("tenant API key request must be an object.");
-  }
-  return value as TenantPolicyApiKeyCreateRequestBody;
-}
-
-function tenantPolicyApiKeyRevokeFromUnknown(value: unknown): TenantPolicyApiKeyRevokeRequestBody {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw badRequest("tenant API key revoke request must be an object.");
-  }
-  return value as TenantPolicyApiKeyRevokeRequestBody;
-}
-
-function tenantPolicyApiKeyFromCreateBody(body: TenantPolicyApiKeyCreateRequestBody): { apiKey: TenantApiKey; token: string } {
-  const token = body.token === undefined ? generateTenantApiToken() : tenantPolicyApiToken(body.token);
-  return {
-    token,
-    apiKey: compactObject({
-      tokenHash: hashTenantApiToken(token),
-      actor: tenantPolicyApiKeyActor(body.actor),
-      role: tenantPolicyRole(body.role, "role"),
-      modelKeyEnv: body.modelKeyEnv === undefined ? undefined : envNameValue(body.modelKeyEnv, "modelKeyEnv"),
-    }),
-  };
-}
-
 function tenantPolicyApiKeyActor(value: unknown): string {
   const actor = requireString(value, "actor").trim();
   if (actor.length > 120 || /[\0\r\n]/.test(actor)) {
     throw badRequest("actor must be a single-line string at most 120 characters.");
   }
   return actor;
-}
-
-function tenantPolicyApiToken(value: unknown): string {
-  const token = requireString(value, "token").trim();
-  if (token.length > 512 || /[\0\r\n]/.test(token)) {
-    throw badRequest("token must be a single-line string at most 512 characters.");
-  }
-  return token;
-}
-
-function tenantPolicyApiTokenHash(value: unknown, field: string): string {
-  const hash = requireString(value, field).trim();
-  if (!/^sha256:[a-f0-9]{64}$/.test(hash)) {
-    throw badRequest(`${field} must be a sha256 token hash.`);
-  }
-  return hash;
-}
-
-function hashTenantApiToken(token: string): string {
-  return `sha256:${createHash("sha256").update(token, "utf8").digest("hex")}`;
-}
-
-function generateTenantApiToken(): string {
-  return `loom_${randomBytes(24).toString("base64url")}`;
-}
-
-function sanitizeTenantApiKey(key: TenantApiKey): { actor: string; role: TenantRole; modelKeyEnv?: string } {
-  return compactObject({ actor: key.actor, role: key.role, modelKeyEnv: key.modelKeyEnv });
-}
-
-function sanitizeTenantApiKeys(keys: TenantApiKey[] | undefined): Array<{ actor: string; role: TenantRole; modelKeyEnv?: string }> | undefined {
-  const sanitized = keys?.map(sanitizeTenantApiKey) ?? [];
-  return sanitized.length ? sanitized : undefined;
 }
 
 function tenantPolicyRole(value: unknown, field: string): TenantRole {
@@ -20152,21 +20068,21 @@ async function requireTenantAccess(
   const policy = await readTenantPolicy(resolve(options.workspaceRoot), tenant, options);
   const tokens = options.tenantTokens ?? {};
   const apiKeys = options.tenantApiKeys ?? {};
-  const hasGlobalAuth = Object.keys(tokens).length > 0 || Object.keys(apiKeys).length > 0;
+  const oidc = options.oidcAuthenticator;
+  const hasGlobalAuth = Object.keys(tokens).length > 0 || Object.keys(apiKeys).length > 0 || Boolean(oidc);
   const hasTenantPolicyAuth = (policy?.apiKeys?.length ?? 0) > 0;
   if (!hasGlobalAuth && !hasTenantPolicyAuth) return undefined;
 
   const tenantApiKeys = [...(apiKeys[tenant] ?? []), ...(policy?.apiKeys ?? [])];
   const expected = tokens[tenant];
-  if (!expected && tenantApiKeys.length === 0) {
+  if (!expected && tenantApiKeys.length === 0 && !oidc) {
     throw unauthorized(`unknown tenant: ${tenant}`);
   }
 
-  const provided =
+  const headerCredential =
     bearerToken(req.headers.authorization) ??
-    headerValue(req.headers["x-loom-tenant-token"]) ??
-    streamQueryToken(url) ??
-    undefined;
+    headerValue(req.headers["x-loom-tenant-token"]);
+  const provided = headerCredential ?? streamQueryToken(url);
   const apiKey = tenantApiKeys.find((key) => tenantApiKeyMatches(key, provided));
   if (apiKey) {
     const access = compactObject({ actor: apiKey.actor, role: apiKey.role, modelKeyEnv: apiKey.modelKeyEnv });
@@ -20176,6 +20092,18 @@ async function requireTenantAccess(
 
   if (expected && safeEqualString(provided, expected)) {
     const access = { actor: "legacy-token", role: "admin" as const };
+    requireTenantRole(access, requiredRole);
+    return access;
+  }
+
+  if (oidc && headerCredential) {
+    let identity;
+    try {
+      identity = await oidc.authenticate(headerCredential, tenant);
+    } catch {
+      throw unauthorized("invalid tenant token");
+    }
+    const access = { actor: identity.actor, role: identity.role };
     requireTenantRole(access, requiredRole);
     return access;
   }
@@ -20194,35 +20122,41 @@ async function requireServerStatusAccess(
   url?: URL,
 ): Promise<TenantAccess | undefined> {
   const keys = await serverStatusAccessKeys(workspaceRoot, options);
-  if (keys.length === 0) return undefined;
+  const oidc = options.oidcAuthenticator;
+  if (keys.length === 0 && !oidc) return undefined;
 
-  const provided =
+  const headerCredential =
     bearerToken(req.headers.authorization) ??
-    headerValue(req.headers["x-loom-tenant-token"]) ??
-    streamQueryToken(url) ??
-    undefined;
+    headerValue(req.headers["x-loom-tenant-token"]);
+  const provided = headerCredential ?? streamQueryToken(url);
   const matches = keys
     .filter((key) => tenantApiKeyMatches(key, provided))
     .sort((a, b) => tenantRoleRank(b.role) - tenantRoleRank(a.role));
   const key = matches[0];
-  if (!key) {
-    throw unauthorized("invalid tenant token");
+  if (key) {
+    const access = { actor: key.actor, role: key.role };
+    requireTenantRole(access, "admin");
+    return access;
   }
 
-  const access = { actor: key.actor, role: key.role };
-  requireTenantRole(access, "admin");
-  return access;
+  if (oidc && headerCredential) {
+    let identity;
+    try {
+      identity = await oidc.authenticate(headerCredential);
+    } catch {
+      throw unauthorized("invalid tenant token");
+    }
+    const access = { actor: identity.actor, role: identity.role };
+    requireTenantRole(access, "admin");
+    return access;
+  }
+
+  throw unauthorized("invalid tenant token");
 }
 
 function streamQueryToken(url: URL | undefined): string | undefined {
   if (!url?.pathname.endsWith("/stream")) return undefined;
   return url.searchParams.get("token") ?? undefined;
-}
-
-function tenantApiKeyMatches(key: TenantApiKey, provided: string | undefined): boolean {
-  if (!provided) return false;
-  if (key.token && safeEqualString(provided, key.token)) return true;
-  return Boolean(key.tokenHash && safeEqualString(hashTenantApiToken(provided), key.tokenHash));
 }
 
 function safeEqualString(left: string | undefined, right: string | undefined): boolean {
@@ -20424,14 +20358,6 @@ async function readTenantPolicyJson(req: IncomingMessage): Promise<TenantPolicyR
 
 async function readTenantPolicySettingsJson(req: IncomingMessage): Promise<TenantPolicySettingsRequestBody> {
   return readJsonBody<TenantPolicySettingsRequestBody>(req);
-}
-
-async function readTenantPolicyApiKeyCreateJson(req: IncomingMessage): Promise<TenantPolicyApiKeyCreateRequestBody> {
-  return readJsonBody<TenantPolicyApiKeyCreateRequestBody>(req);
-}
-
-async function readTenantPolicyApiKeyRevokeJson(req: IncomingMessage): Promise<TenantPolicyApiKeyRevokeRequestBody> {
-  return readJsonBody<TenantPolicyApiKeyRevokeRequestBody>(req);
 }
 
 async function readTenantPolicyEscalationJson(req: IncomingMessage): Promise<TenantPolicyEscalationRequestBody> {

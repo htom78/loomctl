@@ -42,6 +42,7 @@ export type TenantAuditEventType =
   | "stale_run_auto_abandoned"
   | "tenant_policy_updated"
   | "tenant_api_key_created"
+  | "tenant_api_key_rotated"
   | "tenant_api_key_revoked"
   | "tenant_control_plane_restore_dry_run"
   | "operator_target_input_template_written"

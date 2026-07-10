@@ -226,6 +226,10 @@ function proposalBody(skill: string, e: SkillEvalWithLatest, threshold: number):
       reviewerFocusSection(e.failureKinds) +
       failureExamplesSection(e.failureExamples) +
       `请审阅该技能的 SKILL.md，补足让它反复失败的缺口（约定 / 边界条件 / 反例）。\n\n` +
+      `## 晋级门槛\n\n` +
+      `合并前必须用相同目标、模型和验证命令生成成对 harness summary，运行 ` +
+      `\`loom brain benchmark --input <manifest> --report <report>\`，且报告 decision 必须为 ` +
+      `\`promote\`。\n\n` +
       `— 由 \`loom brain\` 自动开具；需人工 + reviewer sub-agent 审核，**不自动合并**。\n`
   );
 }

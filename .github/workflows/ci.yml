@@ -44,6 +44,8 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install PostgreSQL client tools
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - run: npm ci
       - run: npm run build
       - run: npm test

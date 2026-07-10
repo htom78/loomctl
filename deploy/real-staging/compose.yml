@@ -1,0 +1,121 @@
+name: loom-real-staging
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: loom_stage
+      POSTGRES_PASSWORD: ${LOOM_STAGE_POSTGRES_PASSWORD:?set LOOM_STAGE_POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loom_stage -d postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init.sql:/docker-entrypoint-initdb.d/10-databases.sql:ro
+    networks: [loom-real-stage]
+
+  redis:
+    image: redis:7-alpine
+    environment:
+      REDIS_PASSWORD: ${LOOM_STAGE_REDIS_PASSWORD:?set LOOM_STAGE_REDIS_PASSWORD}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$${REDIS_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping | grep -q PONG"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    ports:
+      - "127.0.0.1:56380:6379"
+    volumes:
+      - redis-data:/data
+    networks: [loom-real-stage]
+
+  model-upstream:
+    image: node:22-alpine
+    command: ["node", "/app/mock-openai.mjs"]
+    environment:
+      PORT: "8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - ./mock-openai.mjs:/app/mock-openai.mjs:ro
+    networks: [loom-real-stage]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.91.1
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "2"]
+    environment:
+      DATABASE_URL: postgresql://loom_stage:${LOOM_STAGE_POSTGRES_PASSWORD:?set LOOM_STAGE_POSTGRES_PASSWORD}@postgres:5432/loom_litellm
+      LITELLM_MASTER_KEY: ${LOOM_STAGE_LITELLM_MASTER_KEY:?set LOOM_STAGE_LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LOOM_STAGE_LITELLM_SALT_KEY:?set LOOM_STAGE_LITELLM_SALT_KEY}
+      LOOM_STAGE_UPSTREAM_KEY: local-deterministic-upstream
+    depends_on:
+      postgres:
+        condition: service_healthy
+      model-upstream:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+    ports:
+      - "127.0.0.1:34000:4000"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+    networks: [loom-real-stage]
+
+  gitea:
+    image: docker.gitea.com/gitea:1.26.4-rootless
+    environment:
+      GITEA__database__DB_TYPE: postgres
+      GITEA__database__HOST: postgres:5432
+      GITEA__database__NAME: loom_gitea
+      GITEA__database__USER: loom_stage
+      GITEA__database__PASSWD: ${LOOM_STAGE_POSTGRES_PASSWORD:?set LOOM_STAGE_POSTGRES_PASSWORD}
+      GITEA__server__ROOT_URL: http://127.0.0.1:33001/
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__server__START_SSH_SERVER: "false"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__service__REQUIRE_SIGNIN_VIEW: "false"
+      GITEA__repository__DEFAULT_PRIVATE: public
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__security__SECRET_KEY: ${LOOM_STAGE_GITEA_SECRET_KEY:?set LOOM_STAGE_GITEA_SECRET_KEY}
+      GITEA__security__INTERNAL_TOKEN: ${LOOM_STAGE_GITEA_INTERNAL_TOKEN:?set LOOM_STAGE_GITEA_INTERNAL_TOKEN}
+      GITEA__server__LFS_JWT_SECRET: ${LOOM_STAGE_GITEA_LFS_JWT_SECRET:?set LOOM_STAGE_GITEA_LFS_JWT_SECRET}
+      GITEA__oauth2__JWT_SECRET: ${LOOM_STAGE_GITEA_OAUTH2_JWT_SECRET:?set LOOM_STAGE_GITEA_OAUTH2_JWT_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/healthz | grep -q pass"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    ports:
+      - "127.0.0.1:33001:3000"
+    volumes:
+      - gitea-data:/var/lib/gitea
+      - gitea-config:/etc/gitea
+    networks: [loom-real-stage]
+
+networks:
+  loom-real-stage:
+    name: loom-real-stage
+
+volumes:
+  postgres-data:
+  redis-data:
+  gitea-data:
+  gitea-config:

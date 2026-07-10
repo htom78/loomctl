@@ -24529,10 +24529,19 @@ test("HTTP harness lets tenant admins create and revoke policy API keys without 
       assert.equal(createdBody.apiKey.actor, "auditor");
       assert.equal(createdBody.apiKey.role, "viewer");
       assert.equal(createdBody.apiKey.modelKeyEnv, "LOOM_AUDITOR_MODEL_KEY");
+      assert.match(createdBody.apiKey.id, /^key_/);
+      assert.match(createdBody.apiKey.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+      assert.equal(createdBody.apiKey.active, true);
       assert.match(createdBody.token, /^loom_/);
-      assert.deepEqual(createdBody.policy.apiKeys, [
-        { actor: "auditor", role: "viewer", modelKeyEnv: "LOOM_AUDITOR_MODEL_KEY" },
-      ]);
+      const sanitizedCreatedKey = {
+        id: createdBody.apiKey.id,
+        actor: "auditor",
+        role: "viewer",
+        modelKeyEnv: "LOOM_AUDITOR_MODEL_KEY",
+        createdAt: createdBody.apiKey.createdAt,
+        active: true,
+      };
+      assert.deepEqual(createdBody.policy.apiKeys, [sanitizedCreatedKey]);
       assert.equal(JSON.stringify(createdBody.policy).includes(createdBody.token), false);
       assert.equal(JSON.stringify(createdBody).includes("admin-key"), false);
       assert.equal(JSON.stringify(createdBody).includes("dev-key"), false);
@@ -24540,6 +24549,7 @@ test("HTTP harness lets tenant admins create and revoke policy API keys without 
       assert.equal(JSON.stringify(policyOnDisk).includes(createdBody.token), false);
       assert.equal("token" in policyOnDisk.apiKeys[0], false);
       assert.match(policyOnDisk.apiKeys[0].tokenHash, /^sha256:/);
+      assert.equal(policyOnDisk.apiKeys[0].id, createdBody.apiKey.id);
 
       const listed = await fetch(`${baseUrl}/tenants/alice/policy`, {
         headers: { authorization: `Bearer ${createdBody.token}` },
@@ -24547,9 +24557,7 @@ test("HTTP harness lets tenant admins create and revoke policy API keys without 
       assert.equal(listed.status, 200);
       const listedBody = await listed.json();
       assert.equal(JSON.stringify(listedBody).includes(createdBody.token), false);
-      assert.deepEqual(listedBody.apiKeys, [
-        { actor: "auditor", role: "viewer", modelKeyEnv: "LOOM_AUDITOR_MODEL_KEY" },
-      ]);
+      assert.deepEqual(listedBody.apiKeys, [sanitizedCreatedKey]);
 
       const runs = await fetch(`${baseUrl}/tenants/alice/runs`, {
         headers: { authorization: `Bearer ${createdBody.token}` },
@@ -24587,11 +24595,9 @@ test("HTTP harness lets tenant admins create and revoke policy API keys without 
         event.data.clientId === "members-tab"
       );
       assert.ok(createdEvent);
-      assert.deepEqual(createdEvent.data.createdApiKey, { actor: "auditor", role: "viewer", modelKeyEnv: "LOOM_AUDITOR_MODEL_KEY" });
+      assert.deepEqual(createdEvent.data.createdApiKey, sanitizedCreatedKey);
       assert.equal(createdEvent.data.apiKeysBefore, undefined);
-      assert.deepEqual(createdEvent.data.apiKeysAfter, [
-        { actor: "auditor", role: "viewer", modelKeyEnv: "LOOM_AUDITOR_MODEL_KEY" },
-      ]);
+      assert.deepEqual(createdEvent.data.apiKeysAfter, [sanitizedCreatedKey]);
       const revokedEvent = events.find((event: any) =>
         event.type === "tenant_api_key_revoked" &&
         event.actor === "admin-user" &&
@@ -24602,12 +24608,8 @@ test("HTTP harness lets tenant admins create and revoke policy API keys without 
         event.data.clientId === "members-tab"
       );
       assert.ok(revokedEvent);
-      assert.deepEqual(revokedEvent.data.revokedApiKeys, [
-        { actor: "auditor", role: "viewer", modelKeyEnv: "LOOM_AUDITOR_MODEL_KEY" },
-      ]);
-      assert.deepEqual(revokedEvent.data.apiKeysBefore, [
-        { actor: "auditor", role: "viewer", modelKeyEnv: "LOOM_AUDITOR_MODEL_KEY" },
-      ]);
+      assert.deepEqual(revokedEvent.data.revokedApiKeys, [sanitizedCreatedKey]);
+      assert.deepEqual(revokedEvent.data.apiKeysBefore, [sanitizedCreatedKey]);
       assert.equal(revokedEvent.data.apiKeysAfter, undefined);
       assert.ok(events.every((event: any) =>
         !JSON.stringify(event).includes("admin-key") &&

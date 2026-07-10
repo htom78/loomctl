@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createHash, createHmac } from "node:crypto";
-import { Command } from "commander";
+import { Command, CommanderError } from "commander";
 import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
@@ -93,12 +93,16 @@ import {
 } from "./harness/profile-contract.js";
 import { projectTemplateDefaultSkills, type ProjectTemplateName } from "./harness/project-templates.js";
 import { appendRunEvent } from "./harness/run-store.js";
-import { createHarnessHttpServer, type ControlPlaneAgentIdentityConfig, type ControlPlaneProviderName, type HarnessWorkspaceContext, type IssueCommentReaderContext, type OperatorCockpitQueueBackendName, type TenantApiKey, type WorkspacePullRequestRequest } from "./harness/server.js";
+import { createHarnessHttpServer, type ControlPlaneAgentIdentityConfig, type ControlPlaneProviderName, type HarnessWorkspaceContext, type IssueCommentReaderContext, type OidcAuthConfig, type OperatorCockpitQueueBackendName, type TenantApiKey, type WorkspacePullRequestRequest } from "./harness/server.js";
+import { createOidcAuthenticator, type OidcHealthSnapshot } from "./harness/server-auth.js";
+import { registerBrainBenchmarkCommand } from "./cli/brain-benchmark.js";
+import { registerDisasterRecoveryCommands } from "./cli/disaster-recovery.js";
 import { createStateBackendFromCliOptions, parseStateBackendFlag, stateBackendFlagIssues } from "./cli/state-backend.js";
 import { assertTenantName } from "./tenant.js";
 
 const cfg = loadConfig();
 const program = new Command();
+program.exitOverride();
 const CONTROL_PLANE_PROVIDER_HELP = `control-plane provider: ${SERVE_CONTROL_PLANE_PROVIDERS.join("|")}`;
 const CONTROL_PLANE_GIT_TRANSPORT_SAMPLE_REPO = "team/smoke";
 const DEFAULT_GITEA_TOKEN_ENV = "LOOM_GITEA_TOKEN";
@@ -227,6 +231,7 @@ brain
     }
     console.log(`Opened:\n${branches.join("\n")}`);
   });
+registerBrainBenchmarkCommand(brain);
 
 program
   .command("hooks-install")
@@ -605,6 +610,9 @@ harness
   .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
   .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
   .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
+  .option("--state-probe-interval-ms <ms>", "state dependency probe interval in milliseconds")
+  .option("--state-probe-timeout-ms <ms>", "state dependency probe timeout in milliseconds")
+  .option("--state-probe-max-staleness-ms <ms>", "maximum state dependency probe age in milliseconds")
   .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
   .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
   .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
@@ -630,6 +638,15 @@ harness
   .option("--tenant-token <tenant=token>", "tenant API token; repeatable", collect, [] as string[])
   .option("--tenant-key <tenant=token:actor:role>", "tenant API key with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
   .option("--tenant-key-env <tenant=env:actor:role>", "tenant API key env var with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
+  .option("--oidc-issuer <url>", "OIDC issuer URL for tenant SSO")
+  .option("--oidc-audience <audience>", "required OIDC token audience")
+  .option("--oidc-jwks-url <url>", "OIDC JWKS URL; defaults to issuer discovery")
+  .option("--oidc-tenant-claim <name>", "OIDC claim containing tenant membership", "loom_tenant")
+  .option("--oidc-actor-claim <name>", "OIDC claim containing the audit actor", "preferred_username")
+  .option("--oidc-role-claim <name>", "OIDC claim containing admin|developer|viewer", "loom_role")
+  .option("--oidc-clock-tolerance-seconds <seconds>", "OIDC token clock tolerance", "30")
+  .option("--oidc-request-timeout-ms <ms>", "OIDC discovery and JWKS timeout", "3000")
+  .option("--oidc-allow-insecure-http", "allow HTTP OIDC endpoints for local development only", false)
   .option("--tenant-model-key <tenant=env>", "tenant model API key env var; repeatable", collect, [] as string[])
   .option("--workspace-command-timeout-ms <ms>", "maximum one-shot workspace command timeout in milliseconds", "120000")
   .option("--max-workspace-sessions <count>", "maximum active workspace terminal sessions", "32")
@@ -692,6 +709,9 @@ harness
   .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
   .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
   .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
+  .option("--state-probe-interval-ms <ms>", "state dependency probe interval in milliseconds")
+  .option("--state-probe-timeout-ms <ms>", "state dependency probe timeout in milliseconds")
+  .option("--state-probe-max-staleness-ms <ms>", "maximum state dependency probe age in milliseconds")
   .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
   .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
   .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
@@ -723,6 +743,15 @@ harness
   .option("--tenant-token <tenant=token>", "tenant API token; repeatable", collect, [] as string[])
   .option("--tenant-key <tenant=token:actor:role>", "tenant API key with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
   .option("--tenant-key-env <tenant=env:actor:role>", "tenant API key env var with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
+  .option("--oidc-issuer <url>", "OIDC issuer URL for tenant SSO")
+  .option("--oidc-audience <audience>", "required OIDC token audience")
+  .option("--oidc-jwks-url <url>", "OIDC JWKS URL; defaults to issuer discovery")
+  .option("--oidc-tenant-claim <name>", "OIDC claim containing tenant membership", "loom_tenant")
+  .option("--oidc-actor-claim <name>", "OIDC claim containing the audit actor", "preferred_username")
+  .option("--oidc-role-claim <name>", "OIDC claim containing admin|developer|viewer", "loom_role")
+  .option("--oidc-clock-tolerance-seconds <seconds>", "OIDC token clock tolerance", "30")
+  .option("--oidc-request-timeout-ms <ms>", "OIDC discovery and JWKS timeout", "3000")
+  .option("--oidc-allow-insecure-http", "allow HTTP OIDC endpoints for local development only", false)
   .option("--tenant-model-key <tenant=env>", "tenant model API key env var; repeatable", collect, [] as string[])
   .option("--workspace-command-timeout-ms <ms>", "maximum one-shot workspace command timeout in milliseconds", "120000")
   .option("--max-workspace-sessions <count>", "maximum active workspace terminal sessions", "32")
@@ -1727,6 +1756,7 @@ harness
       process.exitCode = 1;
     }
   });
+registerDisasterRecoveryCommands(harness);
 harness
   .command("doctor")
   .description("preflight-check harness serve options before starting an online sandbox")
@@ -1763,6 +1793,9 @@ harness
   .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
   .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
   .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
+  .option("--state-probe-interval-ms <ms>", "state dependency probe interval in milliseconds", "5000")
+  .option("--state-probe-timeout-ms <ms>", "state dependency probe timeout in milliseconds", "2000")
+  .option("--state-probe-max-staleness-ms <ms>", "maximum state dependency probe age in milliseconds", "15000")
   .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
   .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
   .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
@@ -1788,6 +1821,15 @@ harness
   .option("--tenant-token <tenant=token>", "tenant API token; repeatable", collect, [] as string[])
   .option("--tenant-key <tenant=token:actor:role>", "tenant API key with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
   .option("--tenant-key-env <tenant=env:actor:role>", "tenant API key env var with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
+  .option("--oidc-issuer <url>", "OIDC issuer URL for tenant SSO")
+  .option("--oidc-audience <audience>", "required OIDC token audience")
+  .option("--oidc-jwks-url <url>", "OIDC JWKS URL; defaults to issuer discovery")
+  .option("--oidc-tenant-claim <name>", "OIDC claim containing tenant membership", "loom_tenant")
+  .option("--oidc-actor-claim <name>", "OIDC claim containing the audit actor", "preferred_username")
+  .option("--oidc-role-claim <name>", "OIDC claim containing admin|developer|viewer", "loom_role")
+  .option("--oidc-clock-tolerance-seconds <seconds>", "OIDC token clock tolerance", "30")
+  .option("--oidc-request-timeout-ms <ms>", "OIDC discovery and JWKS timeout", "3000")
+  .option("--oidc-allow-insecure-http", "allow HTTP OIDC endpoints for local development only", false)
   .option("--tenant-model-key <tenant=env>", "tenant model API key env var; repeatable", collect, [] as string[])
   .option("--workspace-command-timeout-ms <ms>", "maximum one-shot workspace command timeout in milliseconds", "120000")
   .option("--max-workspace-sessions <count>", "maximum active workspace terminal sessions", "32")
@@ -1837,6 +1879,9 @@ harness
   .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
   .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
   .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
+  .option("--state-probe-interval-ms <ms>", "state dependency probe interval in milliseconds", "5000")
+  .option("--state-probe-timeout-ms <ms>", "state dependency probe timeout in milliseconds", "2000")
+  .option("--state-probe-max-staleness-ms <ms>", "maximum state dependency probe age in milliseconds", "15000")
   .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
   .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
   .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
@@ -1862,6 +1907,15 @@ harness
   .option("--tenant-token <tenant=token>", "tenant API token; repeatable", collect, [] as string[])
   .option("--tenant-key <tenant=token:actor:role>", "tenant API key with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
   .option("--tenant-key-env <tenant=env:actor:role>", "tenant API key env var with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
+  .option("--oidc-issuer <url>", "OIDC issuer URL for tenant SSO")
+  .option("--oidc-audience <audience>", "required OIDC token audience")
+  .option("--oidc-jwks-url <url>", "OIDC JWKS URL; defaults to issuer discovery")
+  .option("--oidc-tenant-claim <name>", "OIDC claim containing tenant membership", "loom_tenant")
+  .option("--oidc-actor-claim <name>", "OIDC claim containing the audit actor", "preferred_username")
+  .option("--oidc-role-claim <name>", "OIDC claim containing admin|developer|viewer", "loom_role")
+  .option("--oidc-clock-tolerance-seconds <seconds>", "OIDC token clock tolerance", "30")
+  .option("--oidc-request-timeout-ms <ms>", "OIDC discovery and JWKS timeout", "3000")
+  .option("--oidc-allow-insecure-http", "allow HTTP OIDC endpoints for local development only", false)
   .option("--tenant-model-key <tenant=env>", "tenant model API key env var; repeatable", collect, [] as string[])
   .option("--workspace-command-timeout-ms <ms>", "maximum one-shot workspace command timeout in milliseconds", "120000")
   .option("--max-workspace-sessions <count>", "maximum active workspace terminal sessions", "32")
@@ -1883,6 +1937,9 @@ harness
       : parsePositiveIntFlag(opts.maxTenantActiveRuns, "--max-tenant-active-runs");
     const workspaceSessionIdleTimeoutMs = parsePositiveIntFlag(opts.workspaceSessionIdleTimeoutMs, "--workspace-session-idle-timeout-ms");
     const runLeaseTtlMs = parsePositiveIntFlag(opts.runLeaseTtlMs, "--run-lease-ttl-ms");
+    const stateDependencyProbeIntervalMs = parsePositiveIntFlag(opts.stateProbeIntervalMs ?? "5000", "--state-probe-interval-ms");
+    const stateDependencyProbeTimeoutMs = parsePositiveIntFlag(opts.stateProbeTimeoutMs ?? "2000", "--state-probe-timeout-ms");
+    const stateDependencyProbeMaxStalenessMs = parsePositiveIntFlag(opts.stateProbeMaxStalenessMs ?? "15000", "--state-probe-max-staleness-ms");
     const modelProtocol = parseModelProtocolFlag(opts.modelProtocol, "--model-protocol");
     const controlPlaneProvider = parseControlPlaneProviderFlag(opts.controlPlaneProvider, "--control-plane-provider");
     const serveOptions = serveOptionsWithProfile(opts);
@@ -1917,6 +1974,7 @@ harness
       allowedTools,
       tenantTokens: parseTenantTokens(serveOptions.tenantToken ?? []),
       tenantApiKeys: parseTenantApiKeysFromServeOptions(serveOptions),
+      oidcAuth: oidcAuthFromServeOptions(serveOptions),
       controlPlaneAgentIdentity: controlPlaneAgentIdentityFromGiteaTokens(issueReporterOptions),
       tenantModelKeyEnvs: parseTenantModelKeyEnvs(serveOptions.tenantModelKey ?? []),
       createExecutor,
@@ -1948,6 +2006,9 @@ harness
       runLeaseTtlMs,
       autoAbandonStaleRuns: serveOptions.autoAbandonStaleRuns,
       stateBackend,
+      stateDependencyProbeIntervalMs,
+      stateDependencyProbeTimeoutMs,
+      stateDependencyProbeMaxStalenessMs,
       });
       server.once("close", () => {
         void stateBackend?.close().catch(() => undefined);
@@ -2073,8 +2134,6 @@ harness
     }
   });
 
-program.parseAsync();
-
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     let data = "";
@@ -2117,6 +2176,9 @@ interface HarnessServeCliOptions {
   statePostgresSchema?: string;
   stateRedisUrlEnv?: string;
   stateRedisPrefix?: string;
+  stateProbeIntervalMs?: string;
+  stateProbeTimeoutMs?: string;
+  stateProbeMaxStalenessMs?: string;
   controlPlaneProvider: string;
   controlPlanePr?: boolean;
   controlPlaneMerge?: boolean;
@@ -2142,6 +2204,15 @@ interface HarnessServeCliOptions {
   tenantToken?: string[];
   tenantKey?: string[];
   tenantKeyEnv?: string[];
+  oidcIssuer?: string;
+  oidcAudience?: string;
+  oidcJwksUrl?: string;
+  oidcTenantClaim?: string;
+  oidcActorClaim?: string;
+  oidcRoleClaim?: string;
+  oidcClockToleranceSeconds?: string;
+  oidcRequestTimeoutMs?: string;
+  oidcAllowInsecureHttp?: boolean;
   tenantModelKey?: string[];
   workspaceCommandTimeoutMs: string;
   maxWorkspaceSessions: string;
@@ -2464,11 +2535,13 @@ interface HarnessPlatformPreflightResult {
     model: boolean;
     controlPlane: boolean;
     coder: boolean;
+    identity?: boolean;
   };
   doctor: HarnessDoctorResult;
   model: HarnessModelPreflightResult;
   controlPlane: HarnessControlPlanePreflightResult;
   coder: HarnessCoderPreflightResult;
+  identity?: OidcHealthSnapshot;
   nextCommandOrder: string[];
   nextCommandsReady: boolean;
   nextCommandsMissingInputs: string[];
@@ -2550,6 +2623,16 @@ interface HarnessPlatformCutoverExternalEnvironment {
       postgresSchema?: string;
       redisUrlEnv?: string;
       redisPrefix?: string;
+    };
+    identityProvider?: {
+      kind: "oidc";
+      issuer: string;
+      audience: string;
+      jwksUrl?: string;
+      tenantClaim: string;
+      actorClaim: string;
+      roleClaim: string;
+      allowInsecureHttp: boolean;
     };
     agentGitServiceStaging?: {
       issue: string;
@@ -6686,6 +6769,40 @@ function controlPlanePreflightDiscoveryEndpointUrl(baseUrl: string, apiBasePath:
   return url;
 }
 
+async function runHarnessOidcPreflight(options: HarnessServeCliOptions): Promise<OidcHealthSnapshot | undefined> {
+  if (!options.oidcIssuer && !options.oidcAudience && !options.oidcJwksUrl) return undefined;
+  if (oidcFlagIssues(options).some(Boolean)) {
+    return {
+      schemaVersion: "oidc-health/v1",
+      enabled: true,
+      ready: false,
+      issuer: options.oidcIssuer ?? "",
+      audience: options.oidcAudience ? [options.oidcAudience] : [],
+      tenantClaim: options.oidcTenantClaim ?? "loom_tenant",
+      actorClaim: options.oidcActorClaim ?? "preferred_username",
+      roleClaim: options.oidcRoleClaim ?? "loom_role",
+      failureCount: 1,
+      failureKind: "unavailable",
+    };
+  }
+  try {
+    return await createOidcAuthenticator(oidcAuthFromServeOptions(options) as OidcAuthConfig).ensureReady();
+  } catch {
+    return {
+      schemaVersion: "oidc-health/v1",
+      enabled: true,
+      ready: false,
+      issuer: options.oidcIssuer ?? "",
+      audience: options.oidcAudience ? [options.oidcAudience] : [],
+      tenantClaim: options.oidcTenantClaim ?? "loom_tenant",
+      actorClaim: options.oidcActorClaim ?? "preferred_username",
+      roleClaim: options.oidcRoleClaim ?? "loom_role",
+      failureCount: 1,
+      failureKind: "unavailable",
+    };
+  }
+}
+
 async function runHarnessPlatformPreflight(options: HarnessPlatformPreflightCliOptions): Promise<HarnessPlatformPreflightResult> {
   const serveOptions = platformPreflightServeOptions(options);
   const tenant = parseTenantFlagName(options.tenant);
@@ -6722,6 +6839,7 @@ async function runHarnessPlatformPreflight(options: HarnessPlatformPreflightCliO
     branch: options.branch,
     baseBranch: serveOptions.baseBranch,
   });
+  const identity = await runHarnessOidcPreflight(serveOptions);
   const nextCommands = platformPreflightNextCommands(options, {
     baseUrl: platformPreflightServerUrl(serveOptions),
     tenant,
@@ -6734,12 +6852,14 @@ async function runHarnessPlatformPreflight(options: HarnessPlatformPreflightCliO
     model: model.ok,
     controlPlane: controlPlane.ok,
     coder: coder.ok,
+    ...(identity ? { identity: identity.ready } : {}),
   };
   const missing = [
     ...doctor.missing.map((item) => `doctor:${item}`),
     ...model.missing.map((item) => `model:${item}`),
     ...controlPlane.missing.map((item) => `control-plane:${item}`),
     ...coder.missing.map((item) => `coder:${item}`),
+    ...(identity && !identity.ready ? [`identity:${identity.failureKind ?? "unavailable"}`] : []),
   ];
   return {
     schemaVersion: "platform-preflight/v1",
@@ -6754,6 +6874,7 @@ async function runHarnessPlatformPreflight(options: HarnessPlatformPreflightCliO
     model,
     controlPlane,
     coder,
+    ...(identity ? { identity } : {}),
     nextCommandOrder: [
       "loom harness serve",
       "loom harness cutover-report",
@@ -7311,6 +7432,18 @@ function platformCutoverExternalEnvironment(
         redisUrlEnv: stateRedisUrlEnv,
         redisPrefix: stateBackend === "postgres-redis" ? options.stateRedisPrefix ?? "loom" : undefined,
       }),
+      ...(options.oidcIssuer && options.oidcAudience ? {
+        identityProvider: compactObject({
+          kind: "oidc" as const,
+          issuer: options.oidcIssuer,
+          audience: options.oidcAudience,
+          jwksUrl: options.oidcJwksUrl,
+          tenantClaim: options.oidcTenantClaim ?? "loom_tenant",
+          actorClaim: options.oidcActorClaim ?? "preferred_username",
+          roleClaim: options.oidcRoleClaim ?? "loom_role",
+          allowInsecureHttp: Boolean(options.oidcAllowInsecureHttp),
+        }),
+      } : {}),
       ...(context.agentGitServiceStaging ? { agentGitServiceStaging: context.agentGitServiceStaging } : {}),
       tenants: compactObject({
         primary: tenant,
@@ -7439,6 +7572,9 @@ function appendServeShapeCommandArgs(args: string[], options: HarnessServeCliOpt
     appendCommandArg(args, "--state-redis-url-env", options.stateRedisUrlEnv ?? "LOOM_REDIS_URL");
     appendCommandArg(args, "--state-redis-prefix", options.stateRedisPrefix ?? "loom");
   }
+  appendCommandArg(args, "--state-probe-interval-ms", options.stateProbeIntervalMs);
+  appendCommandArg(args, "--state-probe-timeout-ms", options.stateProbeTimeoutMs);
+  appendCommandArg(args, "--state-probe-max-staleness-ms", options.stateProbeMaxStalenessMs);
   appendCommandArg(args, "--control-plane-provider", options.controlPlaneProvider);
   appendBooleanCommandArg(args, "--control-plane-pr", options.controlPlanePr);
   appendBooleanCommandArg(args, "--control-plane-merge", options.controlPlaneMerge);
@@ -7462,6 +7598,17 @@ function appendServeShapeCommandArgs(args: string[], options: HarnessServeCliOpt
   appendBooleanCommandArg(args, "--allow-unsafe-local-executor", options.allowUnsafeLocalExecutor);
   appendRepeatedCommandArgs(args, "--allow-tool", options.allowTool);
   appendRepeatedCommandArgs(args, "--tenant-key-env", options.tenantKeyEnv);
+  if (options.oidcIssuer) {
+    appendCommandArg(args, "--oidc-issuer", options.oidcIssuer);
+    appendCommandArg(args, "--oidc-audience", options.oidcAudience);
+    appendCommandArg(args, "--oidc-jwks-url", options.oidcJwksUrl);
+    appendCommandArg(args, "--oidc-tenant-claim", options.oidcTenantClaim);
+    appendCommandArg(args, "--oidc-actor-claim", options.oidcActorClaim);
+    appendCommandArg(args, "--oidc-role-claim", options.oidcRoleClaim);
+    appendCommandArg(args, "--oidc-clock-tolerance-seconds", options.oidcClockToleranceSeconds);
+    appendCommandArg(args, "--oidc-request-timeout-ms", options.oidcRequestTimeoutMs);
+    appendBooleanCommandArg(args, "--oidc-allow-insecure-http", options.oidcAllowInsecureHttp);
+  }
   appendRepeatedCommandArgs(args, "--tenant-model-key", options.tenantModelKey);
   appendCommandArg(args, "--workspace-command-timeout-ms", options.workspaceCommandTimeoutMs);
   appendCommandArg(args, "--max-workspace-sessions", options.maxWorkspaceSessions);
@@ -13342,6 +13489,9 @@ function platformPreflightServeOptions(options: HarnessPlatformPreflightCliOptio
     statePostgresSchema: options.statePostgresSchema,
     stateRedisUrlEnv: options.stateRedisUrlEnv,
     stateRedisPrefix: options.stateRedisPrefix,
+    stateProbeIntervalMs: options.stateProbeIntervalMs,
+    stateProbeTimeoutMs: options.stateProbeTimeoutMs,
+    stateProbeMaxStalenessMs: options.stateProbeMaxStalenessMs,
     controlPlaneProvider: options.controlPlaneProvider ?? "gitea-forgejo",
     controlPlanePr: Boolean(options.controlPlanePr),
     controlPlaneMerge: Boolean(options.controlPlaneMerge),
@@ -13367,6 +13517,15 @@ function platformPreflightServeOptions(options: HarnessPlatformPreflightCliOptio
     tenantToken: options.tenantToken ?? [],
     tenantKey: options.tenantKey ?? [],
     tenantKeyEnv: options.tenantKeyEnv ?? [],
+    oidcIssuer: options.oidcIssuer,
+    oidcAudience: options.oidcAudience,
+    oidcJwksUrl: options.oidcJwksUrl,
+    oidcTenantClaim: options.oidcTenantClaim,
+    oidcActorClaim: options.oidcActorClaim,
+    oidcRoleClaim: options.oidcRoleClaim,
+    oidcClockToleranceSeconds: options.oidcClockToleranceSeconds,
+    oidcRequestTimeoutMs: options.oidcRequestTimeoutMs,
+    oidcAllowInsecureHttp: Boolean(options.oidcAllowInsecureHttp),
     tenantModelKey: options.tenantModelKey ?? [],
     workspaceCommandTimeoutMs: options.workspaceCommandTimeoutMs ?? "120000",
     maxWorkspaceSessions: options.maxWorkspaceSessions ?? "32",
@@ -13513,7 +13672,8 @@ function runHarnessDoctor(options: HarnessServeCliOptions): HarnessDoctorResult 
   const giteaTokenReadiness = giteaTokenEnvReadiness(serveOptions.giteaTokenEnv, tenantGiteaTokenEnvs);
   const controlPlaneEnvValidation = controlPlaneEnvValidationDoctorCheck({ ...serveOptions, controlPlaneProvider, tenantGiteaTokenEnvs });
   const policyKeyCount = Object.values(policyTenantApiKeys).reduce((total, keys) => total + keys.length, 0);
-  const tenantAuth = tenantAuthDoctorReadiness(tenantApiKeys, policyKeyCount);
+  const oidcConfigured = Boolean(serveOptions.oidcIssuer?.trim() && serveOptions.oidcAudience?.trim());
+  const tenantAuth = tenantAuthDoctorReadiness(tenantApiKeys, policyKeyCount, oidcConfigured);
   const tenantNames = Object.keys(tenantApiKeys).sort((a, b) => a.localeCompare(b));
   const modelReadiness = modelDoctorReadiness(serveOptions, tenantNames, tenantModelKeyEnvs, tenantApiKeys);
   const missingOnlineSandboxTools = ONLINE_SANDBOX_REQUIRED_SERVER_TOOLS.filter((tool) => !allowedTools.includes(tool));
@@ -13543,6 +13703,14 @@ function runHarnessDoctor(options: HarnessServeCliOptions): HarnessDoctorResult 
       source: serveOptions.operatorBundleDir?.trim() ? "flag" : "default",
     },
     stateBackend,
+    identityProvider: compactDoctorCheck({
+      required: false,
+      ok: oidcFlagIssues(serveOptions).filter(Boolean).length === 0,
+      configured: oidcConfigured,
+      mode: oidcConfigured ? (serveOptions.oidcJwksUrl ? "explicit-jwks" : "discovery") : "api-key",
+      issuer: oidcConfigured ? serveOptions.oidcIssuer : undefined,
+      audience: oidcConfigured ? serveOptions.oidcAudience : undefined,
+    }),
     controlPlaneEnvValidation,
     executorConfiguration: executorConfigurationDoctorCheck(serveOptions),
     localExecutorSafety: compactDoctorCheck({
@@ -13574,6 +13742,7 @@ function runHarnessDoctor(options: HarnessServeCliOptions): HarnessDoctorResult 
       roles: tenantAuth.roles,
       missingRoles: tenantAuth.missingRoles,
       policyKeyCount: tenantAuth.policyKeyCount,
+      oidc: tenantAuth.oidc || undefined,
     },
     model: compactDoctorCheck({
       required: platformRequired,
@@ -13730,11 +13899,12 @@ function doctorControlPlaneStatus(provider: ControlPlaneProviderName): HarnessDo
   };
 }
 
-function tenantAuthDoctorReadiness(keys: Record<string, TenantApiKey[]>, policyKeyCount: number): {
+function tenantAuthDoctorReadiness(keys: Record<string, TenantApiKey[]>, policyKeyCount: number, oidc = false): {
   ok: boolean;
   roles: Record<"admin" | "developer" | "viewer", boolean>;
   missingRoles: Array<"admin" | "developer" | "viewer">;
   policyKeyCount: number;
+  oidc: boolean;
 } {
   const roles = {
     admin: false,
@@ -13744,8 +13914,13 @@ function tenantAuthDoctorReadiness(keys: Record<string, TenantApiKey[]>, policyK
   for (const key of Object.values(keys).flat()) {
     roles[key.role] = true;
   }
+  if (oidc) {
+    roles.admin = true;
+    roles.developer = true;
+    roles.viewer = true;
+  }
   const missingRoles = (["admin", "developer", "viewer"] as const).filter((role) => !roles[role]);
-  return { ok: missingRoles.length === 0, roles, missingRoles, policyKeyCount };
+  return { ok: missingRoles.length === 0, roles, missingRoles, policyKeyCount, oidc };
 }
 
 function readPolicyTenantApiKeysForDoctor(workspaceRoot: string): Record<string, TenantApiKey[]> {
@@ -13994,6 +14169,8 @@ function tenantPolicyApiKeysForDoctor(value: unknown): TenantApiKey[] {
     if (typeof entry.actor !== "string") return [];
     if (entry.role !== "admin" && entry.role !== "developer" && entry.role !== "viewer") return [];
     if (typeof entry.token !== "string" && typeof entry.tokenHash !== "string") return [];
+    if (typeof entry.notBefore === "string" && Date.parse(entry.notBefore) > Date.now()) return [];
+    if (typeof entry.expiresAt === "string" && Date.parse(entry.expiresAt) <= Date.now()) return [];
     const modelKeyEnv = typeof entry.modelKeyEnv === "string" && isEnvName(entry.modelKeyEnv)
       ? entry.modelKeyEnv
       : undefined;
@@ -21139,9 +21316,13 @@ function serveFlagValidationIssues(options: HarnessServeCliOptions): ServeFlagVa
       : positiveIntFlagIssue(options.maxTenantActiveRuns, "--max-tenant-active-runs"),
     positiveIntFlagIssue(options.workspaceSessionIdleTimeoutMs, "--workspace-session-idle-timeout-ms"),
     positiveIntFlagIssue(options.runLeaseTtlMs, "--run-lease-ttl-ms"),
+    options.stateProbeIntervalMs === undefined ? undefined : boundedPositiveIntFlagIssue(options.stateProbeIntervalMs, "--state-probe-interval-ms", 300_000),
+    options.stateProbeTimeoutMs === undefined ? undefined : boundedPositiveIntFlagIssue(options.stateProbeTimeoutMs, "--state-probe-timeout-ms", 300_000),
+    options.stateProbeMaxStalenessMs === undefined ? undefined : boundedPositiveIntFlagIssue(options.stateProbeMaxStalenessMs, "--state-probe-max-staleness-ms", 300_000),
     operatorCockpitQueueBackendFlagIssue(options.operatorCockpitQueueBackend, "--operator-cockpit-queue-backend"),
     operatorCockpitQueueAgentGitServiceRepoFlagIssue(options.operatorCockpitQueueAgsRepo),
     operatorCockpitQueueAgentGitServicePathFlagIssue(options.operatorCockpitQueueAgsPath),
+    ...oidcFlagIssues(options),
     ...stateBackendFlagIssues(options),
   ];
   if (options.executor === "docker" || options.executor === "coder") {
@@ -21163,6 +21344,60 @@ function positiveIntFlagIssue(value: string, flag: string): ServeFlagValidationI
   const parsed = Number(value);
   if (Number.isInteger(parsed) && parsed >= 1) return undefined;
   return { flag, message: `${flag} must be a positive integer.` };
+}
+
+function boundedPositiveIntFlagIssue(value: string, flag: string, maximum: number): ServeFlagValidationIssue | undefined {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= 1 && parsed <= maximum) return undefined;
+  return { flag, message: `${flag} must be an integer between 1 and ${maximum}.` };
+}
+
+function oidcFlagIssues(options: HarnessServeCliOptions): Array<ServeFlagValidationIssue | undefined> {
+  const enabled = Boolean(options.oidcIssuer || options.oidcAudience || options.oidcJwksUrl);
+  if (!enabled) return [];
+  return [
+    options.oidcIssuer?.trim()
+      ? oidcUrlFlagIssue(options.oidcIssuer, "--oidc-issuer", Boolean(options.oidcAllowInsecureHttp))
+      : { flag: "--oidc-issuer", message: "--oidc-issuer is required when OIDC is configured." },
+    options.oidcAudience?.trim()
+      ? undefined
+      : { flag: "--oidc-audience", message: "--oidc-audience is required when OIDC is configured." },
+    options.oidcJwksUrl === undefined
+      ? undefined
+      : oidcUrlFlagIssue(options.oidcJwksUrl, "--oidc-jwks-url", Boolean(options.oidcAllowInsecureHttp)),
+    oidcClaimFlagIssue(options.oidcTenantClaim ?? "loom_tenant", "--oidc-tenant-claim"),
+    oidcClaimFlagIssue(options.oidcActorClaim ?? "preferred_username", "--oidc-actor-claim"),
+    oidcClaimFlagIssue(options.oidcRoleClaim ?? "loom_role", "--oidc-role-claim"),
+    boundedIntegerFlagIssue(options.oidcClockToleranceSeconds ?? "30", "--oidc-clock-tolerance-seconds", 0, 300),
+    boundedIntegerFlagIssue(options.oidcRequestTimeoutMs ?? "3000", "--oidc-request-timeout-ms", 100, 30_000),
+  ];
+}
+
+function oidcUrlFlagIssue(value: string, flag: string, allowInsecureHttp: boolean): ServeFlagValidationIssue | undefined {
+  try {
+    const url = new URL(value);
+    if (url.username || url.password || url.hash) throw new Error("unsafe URL");
+    if (url.protocol === "https:" || (allowInsecureHttp && url.protocol === "http:")) return undefined;
+  } catch {
+    // Report the same operator-facing validation below.
+  }
+  return { flag, message: `${flag} must be an absolute HTTPS URL without credentials or a fragment.` };
+}
+
+function oidcClaimFlagIssue(value: string, flag: string): ServeFlagValidationIssue | undefined {
+  if (/^[A-Za-z0-9_.:-]{1,120}$/.test(value.trim())) return undefined;
+  return { flag, message: `${flag} must be a valid claim name.` };
+}
+
+function boundedIntegerFlagIssue(
+  value: string,
+  flag: string,
+  minimum: number,
+  maximum: number,
+): ServeFlagValidationIssue | undefined {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum) return undefined;
+  return { flag, message: `${flag} must be an integer between ${minimum} and ${maximum}.` };
 }
 
 function positiveNumberFlagIssue(value: string, flag: string): ServeFlagValidationIssue | undefined {
@@ -21213,6 +21448,7 @@ interface ServeExecutorSafetyOptions {
   tenantToken?: string[];
   tenantKey?: string[];
   tenantKeyEnv?: string[];
+  oidcIssuer?: string;
 }
 
 function requireSafeServeExecutor(options: ServeExecutorSafetyOptions): void {
@@ -21232,7 +21468,7 @@ function unsafeLocalExecutorReasons(options: ServeExecutorSafetyOptions, policyT
   return [
     !isLoopbackHost(options.host) ? `host ${options.host} is not loopback` : undefined,
     options.allowShell || options.allowTool.includes("shell.exec") ? "shell.exec is allowed" : undefined,
-    options.tenantToken?.length || options.tenantKey?.length || options.tenantKeyEnv?.length || hasPolicyTenantAuth
+    options.tenantToken?.length || options.tenantKey?.length || options.tenantKeyEnv?.length || options.oidcIssuer || hasPolicyTenantAuth
       ? "tenant authentication is configured"
       : undefined,
   ].filter((reason): reason is string => Boolean(reason));
@@ -21325,6 +21561,36 @@ function parseTenantApiKeysFromServeOptions(options: Pick<HarnessServeCliOptions
     parseTenantApiKeys(options.tenantKey ?? []),
     parseTenantApiKeyEnvs(options.tenantKeyEnv ?? []),
   );
+}
+
+function oidcAuthFromServeOptions(options: Pick<
+  HarnessServeCliOptions,
+  | "oidcIssuer"
+  | "oidcAudience"
+  | "oidcJwksUrl"
+  | "oidcTenantClaim"
+  | "oidcActorClaim"
+  | "oidcRoleClaim"
+  | "oidcClockToleranceSeconds"
+  | "oidcRequestTimeoutMs"
+  | "oidcAllowInsecureHttp"
+>): OidcAuthConfig | undefined {
+  if (!options.oidcIssuer && !options.oidcAudience) return undefined;
+  if (!options.oidcIssuer || !options.oidcAudience) {
+    console.error("--oidc-issuer and --oidc-audience must be configured together");
+    process.exit(2);
+  }
+  return {
+    issuer: options.oidcIssuer,
+    audience: options.oidcAudience,
+    jwksUrl: options.oidcJwksUrl,
+    tenantClaim: options.oidcTenantClaim,
+    actorClaim: options.oidcActorClaim,
+    roleClaim: options.oidcRoleClaim,
+    clockToleranceSeconds: Number(options.oidcClockToleranceSeconds ?? "30"),
+    requestTimeoutMs: Number(options.oidcRequestTimeoutMs ?? "3000"),
+    allowInsecureHttp: Boolean(options.oidcAllowInsecureHttp),
+  };
 }
 
 function parseTenantApiKeyEnvs(values: string[]): Record<string, TenantApiKey[]> {
@@ -22250,3 +22516,17 @@ function renderExecutorTemplate(template: string, context: HarnessWorkspaceConte
   }
   return rendered;
 }
+
+try {
+  await program.parseAsync();
+} catch (error) {
+  if (error instanceof CommanderError) {
+    process.exitCode = error.exitCode;
+  } else {
+    throw error;
+  }
+}
+await Promise.all([
+  new Promise<void>((resolve, reject) => process.stdout.write("", (error) => error ? reject(error) : resolve())),
+  new Promise<void>((resolve, reject) => process.stderr.write("", (error) => error ? reject(error) : resolve())),
+]);

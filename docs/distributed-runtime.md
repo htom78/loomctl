@@ -82,11 +82,18 @@ admission is released by TTL.
 - `src/cli/state-backend.ts`: CLI parsing, validation, and backend construction.
 - `src/harness/server-routes.ts`: explicit route-domain dispatch for runs,
   workspace, policy, VAS, control-plane, and operator surfaces.
+- `src/harness/server-observability.ts`: state dependency probes and metric formatting.
+- `src/harness/server-auth.ts`: API key lifecycle and OIDC/JWKS verification.
+- `src/harness/disaster-recovery.ts`: encrypted PostgreSQL/Redis/workspace backup,
+  restore validation, and isolated drill reports.
 
 ## Failure and Security Model
 
 - PostgreSQL or Redis unavailability fails startup or the affected operation;
   the service never silently downgrades to filesystem coordination.
+- `/readyz` continuously gates readiness on bounded PostgreSQL and Redis probes;
+  `/metrics` exposes dependency, queue-lag, lease-expiry, and capacity signals
+  without tenant or secret labels. SLOs and alerts are defined in `docs/slo.md`.
 - Active runs and workspace sessions fail closed when their admission heartbeat
   can no longer refresh the owner-scoped lease.
 - Redis persistence helps restart recovery, but PostgreSQL remains the durable
@@ -95,6 +102,8 @@ admission is released by TTL.
   tenant/project/run and never grant authority by themselves.
 - Connection URLs come from named environment variables and are not written to
   status, audit, or run artifacts.
+- Portable backups are quiesced, AES-256-GCM encrypted, manifest-authenticated,
+  and restored into isolated targets by default; see `docs/disaster-recovery.md`.
 - The staging stack uses committed local-only tokens and an unsafe local shell
   executor. It must not be exposed externally.
 
@@ -125,8 +134,7 @@ and platform concurrency gates.
 ## Remaining Production Work
 
 - replace the shared-volume staging executor with real Coder workspaces;
-- add managed PostgreSQL/Redis backup, restore, encryption, and credential rotation;
-- add queue-lag, lease-expiry, retry, and backend saturation telemetry;
-- add continuous PostgreSQL/Redis dependency probes to `/readyz`;
+- configure managed PostgreSQL PITR, Redis persistence, offsite retention, and
+  scheduled execution around the portable recovery workflow;
 - define rolling migration compatibility and load targets beyond the smoke test;
 - run strict non-loopback external staging before production cutover.

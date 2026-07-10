@@ -8,15 +8,19 @@ in-workspace CLI + the brain. The matrix still emerges via the shared Gitea boar
 - Coder server running (`coder server`).
 - Docker with **gVisor** installed if `runtime = "runsc"` (the default). Set `runtime = ""` for plain runc, or `kata-fc` for Firecracker microVMs.
 - Docker CLI available to Terraform provisioning; the template applies the pids cap with `docker update --pids-limit`.
-- A user-defined docker network `loom-net` reachable to the LiteLLM gateway + Gitea, **not** between workspaces.
+- Set `docker_socket` when Docker is not exposed at the provider default, for example
+  `unix:///Users/<user>/.docker/run/docker.sock` with Docker Desktop on macOS.
+- A user-defined service network `loom-net` containing LiteLLM + Gitea. Workspaces never join it directly.
 - Gitea/Forgejo (board + `_skills` repo) and the LiteLLM gateway up.
-- The workspace image built & pushed: copy this `loomctl/` repo next to `build/`, then
-  `docker build -t loom/coder-workspace:latest -f build/Dockerfile .`
+- The workspace and allow-list egress images built from the `loomctl/` repository root:
+  `docker build -t loom/coder-workspace:latest -f coder-template/build/Dockerfile .`
+  `docker build -t loom/coder-egress:latest -f coder-template/build/egress.Dockerfile coder-template/build`
 
 ## Push the template
 ```bash
 coder templates push loom -d .
-# set per-deployment vars (gateway_url, gitea_url, skills_repo_url, runtime, network,
+# set per-deployment vars (docker_socket, gateway_url, gitea_url, skills_repo_url, runtime, network,
+# coder_upstream, coder_proxy_port, gateway_upstream, gitea_upstream,
 # brain_ingest_url_template) via a loom.auto.tfvars or the Coder UI.
 # gateway_key and brain_ingest_token should come from secrets.
 ```
@@ -46,7 +50,8 @@ Tenant policy `executorTemplateParameters` can set per-tenant non-secret values 
 
 ## What each tenant gets
 - A persistent, isolated workspace (own volume at /home/dev → `~/.claude` + subscription login persist → native `--resume` works).
-- A hardened container: `runsc` by default, dropped capabilities, no-new-privileges, read-only rootfs, bounded `/tmp`, pids cap, CPU/memory caps, and a named gateway/Gitea network.
+- A hardened container: `runsc` by default, dropped capabilities, no-new-privileges, read-only rootfs, bounded `/tmp`, pids cap, and hard CPU/memory caps.
+- An internal per-workspace network with no host or tenant-to-tenant route. A 128 MB unprivileged sidecar proxies only fixed Coder, Gitea, and LiteLLM TCP targets.
 - Web VS Code + web terminal + SSH (Coder).
 - `loom project add / goal / brain`, the native `/goal` loop, and the brain Stop hook — preconfigured.
 - **Auth mode** parameter: `gateway` (central API key injected) or `subscription` (nothing injected — `claude login` with your own seat, persists in your volume; never shared).

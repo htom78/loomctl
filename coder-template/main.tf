@@ -6,8 +6,17 @@ terraform {
 }
 
 provider "coder" {}
-provider "docker" {}
 
+variable "docker_socket" {
+  description = "Optional Docker socket URI for macOS, rootless Docker, or remote provisioners"
+  default     = ""
+}
+
+provider "docker" {
+  host = var.docker_socket != "" ? var.docker_socket : null
+}
+
+data "coder_provisioner" "me" {}
 data "coder_workspace" "me" {}
 data "coder_workspace_owner" "me" {}
 
@@ -56,8 +65,8 @@ data "coder_parameter" "pids_limit" {
 # Variables (set per-deployment, e.g. in a *.auto.tfvars)
 # ---------------------------------------------------------------------------
 variable "gateway_url" {
-  description = "LiteLLM gateway, Anthropic-compatible base URL"
-  default     = "http://gateway.internal:4000"
+  description = "LiteLLM gateway URL exposed inside the tenant-private network"
+  default     = "http://egress:4000"
 }
 
 variable "gateway_key" {
@@ -67,16 +76,49 @@ variable "gateway_key" {
 }
 
 variable "gitea_url" {
-  default = "http://git.internal:3000"
+  default = "http://egress:3000"
 }
 
 variable "skills_repo_url" {
   description = "Shared git-backed skills + brain repo"
-  default     = "http://git.internal/team/_skills.git"
+  default     = "http://egress:3000/team/_skills.git"
 }
 
 variable "workspace_image" {
   default = "loom/coder-workspace:latest"
+}
+
+variable "egress_image" {
+  description = "Minimal socat image used by the per-workspace allow-list proxy"
+  default     = "loom/coder-egress:latest"
+}
+
+variable "coder_upstream" {
+  description = "Fixed host:port target for Coder agent traffic"
+  default     = "host.docker.internal:3000"
+}
+
+variable "coder_proxy_port" {
+  description = "Private-network port matching the Coder access URL"
+  default     = 3000
+}
+
+variable "gateway_upstream" {
+  description = "Fixed host:port target for LiteLLM traffic"
+  default     = "litellm:4000"
+}
+
+variable "gateway_proxy_port" {
+  default = 4000
+}
+
+variable "gitea_upstream" {
+  description = "Fixed host:port target for Gitea traffic"
+  default     = "gitea:3000"
+}
+
+variable "gitea_proxy_port" {
+  default = 3000
 }
 
 variable "runtime" {
@@ -85,7 +127,7 @@ variable "runtime" {
 }
 
 variable "network" {
-  description = "Docker network reachable to gateway+gitea, NOT between tenant workspaces"
+  description = "Service network joined only by each workspace's allow-list egress proxy"
   default     = "loom-net"
 }
 
@@ -109,7 +151,7 @@ locals {
 # The Coder agent that runs INSIDE the workspace
 # ---------------------------------------------------------------------------
 resource "coder_agent" "main" {
-  arch = "amd64"
+  arch = data.coder_provisioner.me.arch
   os   = "linux"
 
   env = merge(
@@ -176,6 +218,52 @@ resource "coder_app" "code_server" {
   share        = "owner"
 }
 
+# Each tenant gets an internal-only network. The workspace cannot route to the
+# host, another tenant, PostgreSQL, or Redis; only the fixed egress listeners.
+resource "docker_network" "workspace" {
+  name     = "loom-private-${local.tenant_key}-${data.coder_workspace.me.id}"
+  internal = true
+}
+
+resource "docker_container" "egress" {
+  count = data.coder_workspace.me.start_count
+  image = var.egress_image
+  name  = "loom-egress-${local.tenant_key}-${lower(data.coder_workspace.me.name)}"
+
+  command = [<<-EOT
+    socat TCP-LISTEN:${var.coder_proxy_port},fork,reuseaddr TCP:${var.coder_upstream} &
+    socat TCP-LISTEN:${var.gitea_proxy_port},fork,reuseaddr TCP:${var.gitea_upstream} &
+    exec socat TCP-LISTEN:${var.gateway_proxy_port},fork,reuseaddr TCP:${var.gateway_upstream}
+  EOT
+  ]
+
+  cpus      = "0.25"
+  memory    = 128
+  read_only = true
+  capabilities {
+    drop = ["ALL"]
+  }
+  security_opts = ["no-new-privileges:true"]
+
+  provisioner "local-exec" {
+    command = "docker update --pids-limit 64 ${self.name} >/dev/null"
+  }
+
+  networks_advanced {
+    name    = docker_network.workspace.name
+    aliases = ["egress"]
+  }
+
+  networks_advanced {
+    name = var.network
+  }
+
+  host {
+    host = "host.docker.internal"
+    ip   = "host-gateway"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Persistent home → ~/.claude session store + (subscription) login survive rebuilds.
 # This is why native --resume works per tenant across sessions.
@@ -188,7 +276,7 @@ resource "docker_volume" "home" {
 }
 
 # ---------------------------------------------------------------------------
-# The workspace container — isolated with gVisor (var.runtime)
+# The workspace container — isolated with gVisor (var.runtime) and a private network.
 # ---------------------------------------------------------------------------
 resource "docker_container" "workspace" {
   count   = data.coder_workspace.me.start_count
@@ -196,12 +284,20 @@ resource "docker_container" "workspace" {
   name    = "loom-${data.coder_workspace_owner.me.name}-${lower(data.coder_workspace.me.name)}"
   runtime = var.runtime
 
-  entrypoint = ["sh", "-c", coder_agent.main.init_script]
+  entrypoint = [
+    "sh",
+    "-c",
+    join("\n", [
+      "mkdir -p /home/dev/.cache/coder-agent",
+      "export TMPDIR=/home/dev/.cache/coder-agent",
+      replace(coder_agent.main.init_script, "/localhost|127\\.0\\.0\\.1/", "egress"),
+    ]),
+  ]
   env        = ["CODER_AGENT_TOKEN=${coder_agent.main.token}"]
 
   # resource caps
-  cpu_shares = data.coder_parameter.cpus.value * 1024
-  memory     = data.coder_parameter.memory_gb.value * 1024
+  cpus   = tostring(data.coder_parameter.cpus.value)
+  memory = data.coder_parameter.memory_gb.value * 1024
 
   # hardening
   read_only = true
@@ -225,11 +321,8 @@ resource "docker_container" "workspace" {
   }
 
   networks_advanced {
-    name = var.network
+    name = docker_network.workspace.name
   }
 
-  host {
-    host = "host.docker.internal"
-    ip   = "host-gateway"
-  }
+  depends_on = [docker_container.egress]
 }

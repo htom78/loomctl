@@ -63,7 +63,7 @@ test("PostgreSQL and Redis backend satisfies durable state contracts", {
     const redis = createClient({ url: redisUrl! });
     await redis.connect();
     const keys: string[] = [];
-    for await (const key of redis.scanIterator({ MATCH: `${prefix}:*`, COUNT: 200 })) keys.push(String(key));
+    for await (const batch of redis.scanIterator({ MATCH: `${prefix}:*`, COUNT: 200 })) keys.push(...batch.map(String));
     if (keys.length) await redis.del(keys);
     await redis.quit();
   }
@@ -107,12 +107,30 @@ test("two harness servers coordinate admission, queue recovery, and audit", {
 
   try {
     const status = await (await fetch(`${secondUrl}/status`)).json();
-    assert.deepEqual(status.server.stateBackend, {
+    const { health, ...stateBackendTopology } = status.server.stateBackend;
+    assert.deepEqual(stateBackendTopology, {
       kind: "postgres-redis",
       metadata: "postgresql",
       coordination: "redis",
       distributed: true,
     });
+    assert.equal(health.schemaVersion, "state-backend-health/v1");
+    assert.equal(health.ok, true);
+    assert.deepEqual(health.dependencies.map((dependency: any) => [dependency.name, dependency.backend, dependency.ok]), [
+      ["metadata", "postgresql", true],
+      ["coordination", "redis", true],
+    ]);
+
+    const readyResponse = await fetch(`${secondUrl}/readyz`);
+    assert.equal(readyResponse.status, 200);
+    const ready = await readyResponse.json();
+    assert.equal(ready.ready, true);
+    assert.equal(ready.checks.stateBackend, "ready");
+
+    const metrics = await (await fetch(`${secondUrl}/metrics`)).text();
+    assert.match(metrics, /^loom_harness_state_backend_ready 1$/m);
+    assert.match(metrics, /^loom_harness_metadata_dependency_up 1$/m);
+    assert.match(metrics, /^loom_harness_coordination_dependency_up 1$/m);
 
     const started = await fetch(`${firstUrl}/runs`, {
       method: "POST",
@@ -193,7 +211,7 @@ test("two harness servers coordinate admission, queue recovery, and audit", {
     const redis = createClient({ url: redisUrl! });
     await redis.connect();
     const keys: string[] = [];
-    for await (const key of redis.scanIterator({ MATCH: `${prefix}:*`, COUNT: 200 })) keys.push(String(key));
+    for await (const batch of redis.scanIterator({ MATCH: `${prefix}:*`, COUNT: 200 })) keys.push(...batch.map(String));
     if (keys.length) await redis.del(keys);
     await redis.quit();
   }

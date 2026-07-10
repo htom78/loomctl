@@ -1,0 +1,112 @@
+groups:
+  - name: loom-harness-availability
+    rules:
+      - alert: LoomHarnessMetricsMissing
+        expr: absent(loom_harness_ready)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Loom harness metrics are missing
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomHarnessNotReady
+        expr: min(loom_harness_ready) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: At least one Loom harness instance is not ready
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomStateBackendUnavailable
+        expr: min(loom_harness_state_backend_ready) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: A Loom state backend dependency is unavailable
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomOidcUnavailable
+        expr: min(loom_harness_oidc_ready) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Loom cannot discover or refresh the configured OIDC JWKS
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomMetadataDependencyUnavailable
+        expr: min(loom_harness_metadata_dependency_up) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL or filesystem metadata probes are failing
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomCoordinationDependencyUnavailable
+        expr: min(loom_harness_coordination_dependency_up) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Redis or filesystem coordination probes are failing
+          runbook: docs/slo.md#alerts
+
+  - name: loom-harness-capacity
+    rules:
+      - alert: LoomRunQueueLagHigh
+        expr: max(loom_harness_queue_oldest_age_seconds) > 300
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The oldest Loom run has waited more than five minutes
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomTenantRunCapacityHigh
+        expr: max(loom_harness_tenant_run_capacity_utilization) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A tenant run pool is above 90 percent utilization
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomWorkspaceSessionCapacityHigh
+        expr: max(loom_harness_workspace_session_capacity_utilization) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Workspace session capacity is above 90 percent
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomExpiredRunLease
+        expr: max(loom_harness_expired_run_leases) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Loom has persisted runs with expired admission leases
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomQueueRecoveryFailure
+        expr: max(loom_harness_queue_recovery_failures) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Loom failed to recover queued work at startup
+          runbook: docs/slo.md#alerts
+
+      - alert: LoomStateProbeFailures
+        expr: increase(loom_harness_metadata_dependency_probe_failures_total[10m]) + increase(loom_harness_coordination_dependency_probe_failures_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Loom state dependency probes have failed recently
+          runbook: docs/slo.md#alerts

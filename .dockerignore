@@ -1,6 +1,14 @@
 .git
 .github
 .loom
+.codex-tmp
+.secrets
+secrets
+.env
+.env.*
+*.key
+*.pem
+*.log
 cutover-bundle
 dist
 node_modules
