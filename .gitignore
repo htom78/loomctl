@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.loom/
+.codex-tmp/
+
+# Local deployment configuration and generated operator state.
+loom.config.json
+plan.json
+reports/
+cutover-bundle/
+*.log
+*.local
+.env
+.env.*
+!.env.example
+
+# Local credentials and executor state.
+.secrets/
+secrets/
+*.pem
+*.key
+

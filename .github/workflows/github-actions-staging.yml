@@ -1,0 +1,92 @@
+name: Loom Strict External Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Cutover phase to run
+        required: true
+        default: pre-serve
+        type: choice
+        options:
+          - pre-serve
+          - post-serve
+          - all
+      loom_bin:
+        description: Executable loom command or wrapper path
+        required: true
+        default: loom
+      bundle_dir:
+        description: Directory containing the exported cutover bundle
+        required: true
+        default: cutover-bundle
+      node_version:
+        description: Node.js version for source-tree bootstrap
+        required: true
+        default: "22"
+      bootstrap_source_tree:
+        description: Build this checkout and use ./loom-wrapper as LOOM_BIN
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: loom-strict-staging-${{ github.ref }}-${{ inputs.phase }}
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    env:
+      LOOM_REQUIRE_EXTERNAL_STAGING: "1"
+      LOOM_REQUIRE_OPERATOR_APPROVALS: "1"
+      LOOM_RUN_STAGING_CI_CHECKS: "1"
+      LOOM_CUTOVER_PHASE: ${{ inputs.phase }}
+      LOOM_BIN: ${{ inputs.loom_bin }}
+      LOOM_ADMIN_TOKEN: ${{ secrets.LOOM_ADMIN_TOKEN }}
+      LOOM_AGENT_GIT_SERVICE_TOKEN: ${{ secrets.LOOM_AGENT_GIT_SERVICE_TOKEN }}
+      LOOM_BOB_DEV_TOKEN: ${{ secrets.LOOM_BOB_DEV_TOKEN }}
+      LOOM_DEV_TOKEN: ${{ secrets.LOOM_DEV_TOKEN }}
+      LOOM_GITEA_WEBHOOK_SECRET: ${{ secrets.LOOM_GITEA_WEBHOOK_SECRET }}
+      LOOM_MODEL_KEY: ${{ secrets.LOOM_MODEL_KEY }}
+      LOOM_VIEWER_TOKEN: ${{ secrets.LOOM_VIEWER_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        if: ${{ inputs.bootstrap_source_tree }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Build source-tree loom wrapper
+        if: ${{ inputs.bootstrap_source_tree }}
+        run: |
+          npm ci
+          npm run build -- --pretty false
+          cat > loom-wrapper <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          node "$GITHUB_WORKSPACE/dist/index.js" "$@"
+          EOF
+          chmod +x loom-wrapper
+          echo "LOOM_BIN=$GITHUB_WORKSPACE/loom-wrapper" >> "$GITHUB_ENV"
+      - name: Check external secret handoff
+        working-directory: ${{ inputs.bundle_dir }}
+        run: |
+          test -f external-secrets.json
+          test -f env.sh
+          jq -e '.schemaVersion == "platform-external-secrets/v1" and .tokenFree == true' external-secrets.json
+      - name: Run strict staging phase
+        working-directory: ${{ inputs.bundle_dir }}
+        run: ./commands.sh
+      - name: Upload staging reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loom-staging-reports
+          path: ${{ inputs.bundle_dir }}/reports

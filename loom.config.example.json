@@ -1,0 +1,23 @@
+{
+  "gatewayUrl": "http://localhost:4000",
+  "gatewayKeyEnv": "LOOM_GATEWAY_KEY",
+  "giteaUrl": "http://localhost:3000",
+  "workspaceRoot": "~/projects",
+  "skillsRepo": "~/projects/_skills",
+  "engine": "claude",
+  "models": {
+    "default": "your-default-model",
+    "reasoning": "your-reasoning-model",
+    "cheap": "your-cheap-model"
+  },
+  "runtime": "runsc",
+  "resources": {
+    "cpus": 2,
+    "memory": "4g",
+    "pidsLimit": 256
+  },
+  "network": "loom-net",
+  "workspaceImage": "loom/workspace:latest",
+  "idleStopMinutes": 60,
+  "defaultAuthMode": "gateway"
+}
