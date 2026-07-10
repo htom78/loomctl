@@ -55,8 +55,6 @@ export type TenantAuditEventType =
   | "operator_ags_evidence_imported"
   | "operator_approvals_exported"
   | "operator_handoff_packet_exported"
-  | "operator_cockpit_loop_execution_blocked"
-  | "operator_cockpit_loop_executed"
   | "agent_git_service_project_agent_provisioned"
   | "agent_git_service_tenant_provisioning_plan_applied"
   | "agent_git_service_wiki_memory_updated"

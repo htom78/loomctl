@@ -3490,7 +3490,10 @@ test("loom harness smoke verifies run controls through a peer server", async () 
 });
 
 test("loom harness smoke pause control keeps a durable pause window", async () => {
-  const source = await readFile(join(process.cwd(), "src/index.ts"), "utf8");
+  const source = [
+    await readFile(join(process.cwd(), "src/cli/lib/smoke.ts"), "utf8"),
+    await readFile(join(process.cwd(), "src/cli/lib/smoke-verify-runs.ts"), "utf8"),
+  ].join("\n");
   assert.match(source, /process\.env\.LOOM_RUN_DIR/);
   assert.match(source, /pause-request\.json/);
   assert.doesNotMatch(source, /setTimeout\(\(\)=>process\.stdout\.write\('slept'\),\d+\)/);
