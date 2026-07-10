@@ -50,39 +50,6 @@ import { formatRunRequesterSummary, giteaIssueUrl, parseGiteaIssueRef } from "./
 import { safeGitRef } from "./harness/git-ref.js";
 import { makeRunId, runHarness } from "./harness/loop.js";
 import { createOpenAiCompatibleAgent, type ModelAgentProtocol } from "./harness/model-agent.js";
-import { checkPlatformCiHandoffPreflight, type PlatformCiHandoffPreflightCliOptions } from "./harness/platform-ci-handoff-preflight.js";
-import { runPlatformCiHandoff, type PlatformCiHandoffRunCliOptions } from "./harness/platform-ci-handoff-run.js";
-import { installPlatformCiHandoff, type PlatformCiHandoffInstallCliOptions } from "./harness/platform-ci-handoff-install.js";
-import { createPlatformCiSecretsPlan, type PlatformCiSecretsPlanCliOptions } from "./harness/platform-ci-secrets-plan.js";
-import { importPlatformCiArtifactReports, type PlatformCiArtifactImportCliOptions } from "./harness/platform-ci-artifact-import.js";
-import { importPlatformOperatorAgsEvidence, type PlatformOperatorAgsEvidenceImportCliOptions } from "./harness/platform-operator-ags-evidence-import.js";
-import { syncPlatformOperatorAgsEvidence, type PlatformOperatorAgsEvidenceSyncCliOptions } from "./harness/platform-operator-ags-evidence-sync.js";
-import { syncPlatformCiArtifactReports, type PlatformCiArtifactSyncCliOptions } from "./harness/platform-ci-artifact-sync.js";
-import { dispatchPlatformCiWorkflow, type PlatformCiWorkflowDispatchCliOptions } from "./harness/platform-ci-workflow-dispatch.js";
-import { createPlatformCiWorkflowPublishPlan, type PlatformCiWorkflowPublishPlanCliOptions } from "./harness/platform-ci-workflow-publish-plan.js";
-import { waitForPlatformCiWorkflow, type PlatformCiWorkflowWaitCliOptions } from "./harness/platform-ci-workflow-wait.js";
-import { createPlatformCiRunProof, type PlatformCiRunProofCliOptions } from "./harness/platform-ci-run-proof.js";
-import { createPlatformGoalAudit, type PlatformGoalAuditCliOptions } from "./harness/platform-goal-audit.js";
-import { runPlatformOperatorCockpitLoop, type PlatformOperatorCockpitLoopCliOptions } from "./harness/platform-operator-cockpit-loop.js";
-import { runPlatformOperatorCockpitRunner, type PlatformOperatorCockpitRunnerCliOptions, type PlatformOperatorCockpitRunnerResult } from "./harness/platform-operator-cockpit-runner.js";
-import {
-  normalizeAgentGitServiceOperatorCockpitQueuePath,
-  normalizeAgentGitServiceOperatorCockpitQueueRepo,
-} from "./harness/operator-cockpit-queue-backend.js";
-import { createPlatformOperatorApprovals } from "./harness/platform-operator-approvals.js";
-import { createPlatformOperatorHandoffPacket, type PlatformOperatorHandoffPacketCliOptions } from "./harness/platform-operator-handoff-packet.js";
-import { runPlatformOperatorHandoffRunner, type PlatformOperatorHandoffRunnerCliOptions } from "./harness/platform-operator-handoff-runner.js";
-import { createPlatformOperatorCockpitNext, createPlatformOperatorStatus, type PlatformOperatorStatusCliOptions } from "./harness/platform-operator-status.js";
-import { writePlatformOperatorGithubActionsTargetInput, type PlatformOperatorGithubActionsTargetInputCliOptions } from "./harness/platform-operator-github-actions-target-input.js";
-import { writePlatformOperatorRealStagingTargetInput, type PlatformOperatorRealStagingTargetInputCliOptions } from "./harness/platform-operator-real-staging-target-input.js";
-import { applyPlatformOperatorRealStagingTargets, type PlatformOperatorRealStagingTargetsApplyCliOptions } from "./harness/platform-operator-real-staging-targets-apply.js";
-import { writePlatformOperatorTargetInputTemplate, type PlatformOperatorTargetInputTemplateCliOptions } from "./harness/platform-operator-target-input-template.js";
-import {
-  createPlatformStagingTargetsEnvCheck,
-  createPlatformStagingTargetsPlan,
-  type PlatformStagingTargetsEnvCheckCliOptions,
-  type PlatformStagingTargetsPlanCliOptions,
-} from "./harness/platform-staging-targets-plan.js";
 import { createUpstreamAgentGitServiceServerEnvPlan, type UpstreamAgentGitServiceServerEnvPlanCliOptions } from "./harness/upstream-agent-git-service-server-env-plan.js";
 import {
   HARNESS_VISION_LOCK,
@@ -566,551 +533,6 @@ harness
     process.exitCode = result.ok ? 0 : 1;
   });
 harness
-  .command("platform-preflight")
-  .description("run doctor plus real model, control-plane, and Coder probes before serving the platform")
-  .option("--workspace-root <path>", "tenant workspace root", process.cwd())
-  .option("--host <host>", "listen host shape used for doctor", "127.0.0.1")
-  .option("--port <port>", "listen port shape used for doctor", "8787")
-  .option("--profile <profile>", "named serve profile: online-sandbox|platform-readiness", "platform-readiness")
-  .requiredOption("--tenant <tenant>", "tenant used for Coder template preflight")
-  .requiredOption("--project <project>", "project used for Coder template preflight")
-  .option("--template <template>", "project template used by generated smoke args", "vas-lite")
-  .option("--isolation-tenant <tenant>", "second tenant used by generated smoke args")
-  .option("--token-env <name>", "env var containing the tenant API token used by generated cutover/smoke args")
-  .option("--viewer-token-env <name>", "env var containing the viewer token used by generated smoke args")
-  .option("--admin-token-env <name>", "env var containing the admin token used by generated cutover/smoke args")
-  .option("--repo <url>", "repository URL to sync during the Coder preflight")
-  .option("--branch <name>", "git branch template to check out during the Coder preflight")
-  .option("--model-base-url <url>", "OpenAI-compatible base URL", cfg.gatewayUrl)
-  .option("--model-key-env <name>", "env var containing the model API key", cfg.gatewayKeyEnv)
-  .option("--default-model <name>", "default OpenAI-compatible model", cfg.models.default)
-  .option("--model-protocol <protocol>", "default model agent protocol: json|tool-call", "json")
-  .option("--executor <kind>", "workspace executor: local|docker|coder", "coder")
-  .option("--executor-image <image>", "Docker image when --executor docker is used")
-  .option("--executor-network <mode>", "Docker network mode for --executor docker")
-  .option("--executor-cpus <count>", "Docker CPU limit, or Coder cpus template parameter")
-  .option("--executor-memory <size>", "Docker memory limit, or Coder memory_gb template parameter")
-  .option("--executor-pids-limit <count>", "Docker pids limit, or Coder pids_limit template parameter")
-  .option("--executor-home-root <path>", "persistent Docker home root; mounts <path>/<tenant> at /home/dev")
-  .option("--executor-workspace <name>", "Coder workspace name or template when --executor coder is used")
-  .option("--executor-remote-cwd <path>", "remote cwd or template for --executor coder", "/home/dev/projects/{project}")
-  .option("--executor-worktree-cwd <path>", "remote run worktree cwd template for --executor coder")
-  .option("--executor-template <name>", "Coder template to create missing tenant workspaces")
-  .option("--executor-template-param <name=value>", "Coder template parameter for missing workspace creation; repeatable", collect, [] as string[])
-  .option("--executor-ide-url <url>", "browser IDE URL template for --executor coder")
-  .option("--executor-preview-url <url>", "browser preview URL template for apps running in --executor coder")
-  .option("--base-branch <name>", "default base git branch used when HTTP body.branch creates a branch", "origin/main")
-  .option("--public-url <url>", "public harness server URL used in run metadata links")
-  .option("--operator-bundle-dir <path>", "operator cockpit bundle directory; defaults to <workspace-root>/cutover-bundle")
-  .option("--operator-cockpit-queue-backend <backend>", "operator cockpit queue backend: filesystem|agent-git-service", "filesystem")
-  .option("--operator-cockpit-queue-ags-repo <owner/repo>", "agent-git-service repo for the operator cockpit queue store")
-  .option("--operator-cockpit-queue-ags-path <path>", "agent-git-service contents path for the operator cockpit queue store")
-  .option("--state-backend <backend>", "durable state backend: file|postgres-redis", "file")
-  .option("--state-postgres-url-env <name>", "env var containing the PostgreSQL connection URL", "LOOM_POSTGRES_URL")
-  .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
-  .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
-  .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
-  .option("--state-probe-interval-ms <ms>", "state dependency probe interval in milliseconds")
-  .option("--state-probe-timeout-ms <ms>", "state dependency probe timeout in milliseconds")
-  .option("--state-probe-max-staleness-ms <ms>", "maximum state dependency probe age in milliseconds")
-  .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
-  .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
-  .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
-  .option("--control-plane-comment", "post final run summaries with body.issue to control-plane comments", false)
-  .option("--control-plane-comment-sync", "allow linked control-plane issue comments to sync into run logs", false)
-  .option("--control-plane-webhook-secret-env <name>", "env var containing the control-plane webhook secret for issue-comment webhooks")
-  .option("--control-plane-url <url>", "control-plane base URL; agent-git-service also reads LOOM_AGENT_GIT_SERVICE_URL")
-  .option("--control-plane-token-env <name>", "env var containing the control-plane token; agent-git-service defaults to LOOM_AGENT_GIT_SERVICE_TOKEN")
-  .option("--tenant-control-plane-token-env <tenant=env>", "tenant control-plane token env var; repeatable", collect, [] as string[])
-  .option("--agent-git-service-token-secret-root <path>", "directory for provisioned agent-git-service project agent tokens")
-  .option("--gitea-pr", "enable Gitea/Forgejo PR creation for HTTP body.pullRequest", false)
-  .option("--gitea-merge", "enable Gitea/Forgejo merge for approved review requests with merge=true", false)
-  .option("--gitea-comment", "post final run summaries with body.issue to Gitea/Forgejo comments", false)
-  .option("--gitea-comment-sync", "allow linked Gitea/Forgejo issue comments to sync into run logs", false)
-  .option("--gitea-webhook-secret-env <name>", "env var containing the Gitea/Forgejo webhook secret for issue-comment webhooks")
-  .option("--gitea-url <url>", "Gitea/Forgejo base URL", cfg.giteaUrl)
-  .option("--gitea-token-env <name>", "env var containing the Gitea/Forgejo token", DEFAULT_GITEA_TOKEN_ENV)
-  .option("--tenant-gitea-token-env <tenant=env>", "tenant Gitea/Forgejo token env var; repeatable", collect, [] as string[])
-  .option("--ingest-brain", "append completed HTTP run outcomes to the git-backed brain", false)
-  .option("--allow-shell", "allow shell.exec actions over HTTP", false)
-  .option("--allow-unsafe-local-executor", "allow non-isolated local executor for single-user HTTP development only", false)
-  .option("--allow-tool <name>", "allowed HTTP tool; repeatable", collect, [] as string[])
-  .option("--tenant-token <tenant=token>", "tenant API token; repeatable", collect, [] as string[])
-  .option("--tenant-key <tenant=token:actor:role>", "tenant API key with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
-  .option("--tenant-key-env <tenant=env:actor:role>", "tenant API key env var with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
-  .option("--oidc-issuer <url>", "OIDC issuer URL for tenant SSO")
-  .option("--oidc-audience <audience>", "required OIDC token audience")
-  .option("--oidc-jwks-url <url>", "OIDC JWKS URL; defaults to issuer discovery")
-  .option("--oidc-tenant-claim <name>", "OIDC claim containing tenant membership", "loom_tenant")
-  .option("--oidc-actor-claim <name>", "OIDC claim containing the audit actor", "preferred_username")
-  .option("--oidc-role-claim <name>", "OIDC claim containing admin|developer|viewer", "loom_role")
-  .option("--oidc-clock-tolerance-seconds <seconds>", "OIDC token clock tolerance", "30")
-  .option("--oidc-request-timeout-ms <ms>", "OIDC discovery and JWKS timeout", "3000")
-  .option("--oidc-allow-insecure-http", "allow HTTP OIDC endpoints for local development only", false)
-  .option("--tenant-model-key <tenant=env>", "tenant model API key env var; repeatable", collect, [] as string[])
-  .option("--workspace-command-timeout-ms <ms>", "maximum one-shot workspace command timeout in milliseconds", "120000")
-  .option("--max-workspace-sessions <count>", "maximum active workspace terminal sessions", "32")
-  .option("--max-tenant-workspace-sessions <count>", "maximum active workspace terminal sessions per tenant")
-  .option("--max-tenant-active-runs <count>", "maximum active harness runs per tenant")
-  .option("--workspace-session-idle-timeout-ms <ms>", "workspace terminal idle timeout in milliseconds", "1800000")
-  .option("--run-lease-ttl-ms <ms>", "running harness run lease TTL in milliseconds", "120000")
-  .option("--auto-abandon-stale-runs", "auto-abandon lease-expired orphaned running runs on startup", false)
-  .option("--report <path>", "write the token-free platform preflight JSON to this path")
-  .action(async (opts: HarnessPlatformPreflightCliOptions) => {
-    const result = await runHarnessPlatformPreflight(opts);
-    await writeJsonReportIfRequested(opts.report, result);
-    console.log(JSON.stringify(result, null, 2));
-    process.exitCode = result.ok ? 0 : 1;
-  });
-harness
-  .command("platform-cutover-plan")
-  .description("emit a token-free operator argv plan from platform preflight through cutover smoke")
-  .option("--out <path>", "write the token-free platform cutover plan JSON to a file")
-  .option("--bundle-out <dir>", "also export a token-free operator bundle from the generated plan")
-  .option("--workspace-root <path>", "tenant workspace root", process.cwd())
-  .option("--host <host>", "listen host shape used for doctor", "127.0.0.1")
-  .option("--port <port>", "listen port shape used for doctor", "8787")
-  .option("--profile <profile>", "named serve profile: online-sandbox|platform-readiness", "platform-readiness")
-  .requiredOption("--tenant <tenant>", "tenant used for Coder template preflight")
-  .requiredOption("--project <project>", "project used for Coder template preflight")
-  .option("--template <template>", "project template used by generated smoke args", "vas-lite")
-  .option("--isolation-tenant <tenant>", "second tenant used by generated smoke args")
-  .option("--token-env <name>", "env var containing the tenant API token used by generated cutover/smoke args")
-  .option("--viewer-token-env <name>", "env var containing the viewer token used by generated smoke args")
-  .option("--admin-token-env <name>", "env var containing the admin token used by generated cutover/smoke args")
-  .option("--repo <url>", "repository URL to sync during the Coder preflight")
-  .option("--branch <name>", "git branch template to check out during the Coder preflight")
-  .option("--model-base-url <url>", "OpenAI-compatible base URL", cfg.gatewayUrl)
-  .option("--model-key-env <name>", "env var containing the model API key", cfg.gatewayKeyEnv)
-  .option("--default-model <name>", "default OpenAI-compatible model", cfg.models.default)
-  .option("--model-protocol <protocol>", "default model agent protocol: json|tool-call", "json")
-  .option("--executor <kind>", "workspace executor: local|docker|coder", "coder")
-  .option("--executor-image <image>", "Docker image when --executor docker is used")
-  .option("--executor-network <mode>", "Docker network mode for --executor docker")
-  .option("--executor-cpus <count>", "Docker CPU limit, or Coder cpus template parameter")
-  .option("--executor-memory <size>", "Docker memory limit, or Coder memory_gb template parameter")
-  .option("--executor-pids-limit <count>", "Docker pids limit, or Coder pids_limit template parameter")
-  .option("--executor-home-root <path>", "persistent Docker home root; mounts <path>/<tenant> at /home/dev")
-  .option("--executor-workspace <name>", "Coder workspace name or template when --executor coder is used")
-  .option("--executor-remote-cwd <path>", "remote cwd or template for --executor coder", "/home/dev/projects/{project}")
-  .option("--executor-worktree-cwd <path>", "remote run worktree cwd template for --executor coder")
-  .option("--executor-template <name>", "Coder template to create missing tenant workspaces")
-  .option("--executor-template-param <name=value>", "Coder template parameter for missing workspace creation; repeatable", collect, [] as string[])
-  .option("--executor-ide-url <url>", "browser IDE URL template for --executor coder")
-  .option("--executor-preview-url <url>", "browser preview URL template for apps running in --executor coder")
-  .option("--base-branch <name>", "default base git branch used when HTTP body.branch creates a branch", "origin/main")
-  .option("--public-url <url>", "public harness server URL used in run metadata links")
-  .option("--operator-bundle-dir <path>", "operator cockpit bundle directory; defaults to <workspace-root>/cutover-bundle")
-  .option("--operator-cockpit-queue-backend <backend>", "operator cockpit queue backend: filesystem|agent-git-service", "filesystem")
-  .option("--operator-cockpit-queue-ags-repo <owner/repo>", "agent-git-service repo for the operator cockpit queue store")
-  .option("--operator-cockpit-queue-ags-path <path>", "agent-git-service contents path for the operator cockpit queue store")
-  .option("--state-backend <backend>", "durable state backend: file|postgres-redis", "file")
-  .option("--state-postgres-url-env <name>", "env var containing the PostgreSQL connection URL", "LOOM_POSTGRES_URL")
-  .option("--state-postgres-schema <name>", "PostgreSQL schema for Loom state", "loom")
-  .option("--state-redis-url-env <name>", "env var containing the Redis connection URL", "LOOM_REDIS_URL")
-  .option("--state-redis-prefix <prefix>", "Redis key prefix for Loom coordination", "loom")
-  .option("--state-probe-interval-ms <ms>", "state dependency probe interval in milliseconds")
-  .option("--state-probe-timeout-ms <ms>", "state dependency probe timeout in milliseconds")
-  .option("--state-probe-max-staleness-ms <ms>", "maximum state dependency probe age in milliseconds")
-  .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP, "gitea-forgejo")
-  .option("--control-plane-pr", "enable control-plane PR creation for HTTP body.pullRequest", false)
-  .option("--control-plane-merge", "enable control-plane merge for approved review requests with merge=true", false)
-  .option("--control-plane-comment", "post final run summaries with body.issue to control-plane comments", false)
-  .option("--control-plane-comment-sync", "allow linked control-plane issue comments to sync into run logs", false)
-  .option("--control-plane-webhook-secret-env <name>", "env var containing the control-plane webhook secret for issue-comment webhooks")
-  .option("--control-plane-url <url>", "control-plane base URL; agent-git-service also reads LOOM_AGENT_GIT_SERVICE_URL")
-  .option("--control-plane-token-env <name>", "env var containing the control-plane token; agent-git-service defaults to LOOM_AGENT_GIT_SERVICE_TOKEN")
-  .option("--tenant-control-plane-token-env <tenant=env>", "tenant control-plane token env var; repeatable", collect, [] as string[])
-  .option("--agent-git-service-token-secret-root <path>", "directory for provisioned agent-git-service project agent tokens")
-  .option("--agent-git-service-staging-issue <owner/repo#number>", "AGS staging issue used by generated read/write probes", DEFAULT_AGENT_GIT_SERVICE_STAGING_ISSUE)
-  .option("--agent-git-service-staging-repo <owner/repo>", "AGS staging repo used by generated read/write probes; defaults to the staging issue repo")
-  .option("--agent-git-service-staging-wiki-page <page>", "AGS wiki memory page used by generated read/write probes", "vas/learnings")
-  .option("--agent-git-service-native-write-workspace-id <id>", "AGS issue workspace id used by the generated native write check")
-  .option("--agent-git-service-native-write-attachment-url <url>", "public evidence URL attached by the generated native write check; defaults to the harness healthz URL")
-  .option("--agent-git-service-native-write-wiki-note <text>", "wiki note appended by the generated native write check", "loom native write check for platform cutover")
-  .option("--gitea-pr", "enable Gitea/Forgejo PR creation for HTTP body.pullRequest", false)
-  .option("--gitea-merge", "enable Gitea/Forgejo merge for approved review requests with merge=true", false)
-  .option("--gitea-comment", "post final run summaries with body.issue to Gitea/Forgejo comments", false)
-  .option("--gitea-comment-sync", "allow linked Gitea/Forgejo issue comments to sync into run logs", false)
-  .option("--gitea-webhook-secret-env <name>", "env var containing the Gitea/Forgejo webhook secret for issue-comment webhooks")
-  .option("--gitea-url <url>", "Gitea/Forgejo base URL", cfg.giteaUrl)
-  .option("--gitea-token-env <name>", "env var containing the Gitea/Forgejo token", DEFAULT_GITEA_TOKEN_ENV)
-  .option("--tenant-gitea-token-env <tenant=env>", "tenant Gitea/Forgejo token env var; repeatable", collect, [] as string[])
-  .option("--ingest-brain", "append completed HTTP run outcomes to the git-backed brain", false)
-  .option("--allow-shell", "allow shell.exec actions over HTTP", false)
-  .option("--allow-unsafe-local-executor", "allow non-isolated local executor for single-user HTTP development only", false)
-  .option("--allow-tool <name>", "allowed HTTP tool; repeatable", collect, [] as string[])
-  .option("--tenant-token <tenant=token>", "tenant API token; repeatable", collect, [] as string[])
-  .option("--tenant-key <tenant=token:actor:role>", "tenant API key with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
-  .option("--tenant-key-env <tenant=env:actor:role>", "tenant API key env var with actor and role; role is admin|developer|viewer; repeatable", collect, [] as string[])
-  .option("--oidc-issuer <url>", "OIDC issuer URL for tenant SSO")
-  .option("--oidc-audience <audience>", "required OIDC token audience")
-  .option("--oidc-jwks-url <url>", "OIDC JWKS URL; defaults to issuer discovery")
-  .option("--oidc-tenant-claim <name>", "OIDC claim containing tenant membership", "loom_tenant")
-  .option("--oidc-actor-claim <name>", "OIDC claim containing the audit actor", "preferred_username")
-  .option("--oidc-role-claim <name>", "OIDC claim containing admin|developer|viewer", "loom_role")
-  .option("--oidc-clock-tolerance-seconds <seconds>", "OIDC token clock tolerance", "30")
-  .option("--oidc-request-timeout-ms <ms>", "OIDC discovery and JWKS timeout", "3000")
-  .option("--oidc-allow-insecure-http", "allow HTTP OIDC endpoints for local development only", false)
-  .option("--tenant-model-key <tenant=env>", "tenant model API key env var; repeatable", collect, [] as string[])
-  .option("--workspace-command-timeout-ms <ms>", "maximum one-shot workspace command timeout in milliseconds", "120000")
-  .option("--max-workspace-sessions <count>", "maximum active workspace terminal sessions", "32")
-  .option("--max-tenant-workspace-sessions <count>", "maximum active workspace terminal sessions per tenant")
-  .option("--max-tenant-active-runs <count>", "maximum active harness runs per tenant")
-  .option("--workspace-session-idle-timeout-ms <ms>", "workspace terminal idle timeout in milliseconds", "1800000")
-  .option("--run-lease-ttl-ms <ms>", "running harness run lease TTL in milliseconds", "120000")
-  .option("--auto-abandon-stale-runs", "auto-abandon lease-expired orphaned running runs on startup", false)
-  .action(async (opts: HarnessPlatformCutoverPlanCliOptions) => {
-    try {
-      const result = await writeHarnessPlatformCutoverPlan(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-cutover-run")
-  .description("execute approved stages from a token-free platform cutover plan")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to stdin")
-  .option("--stage <id>", "stage id to execute; repeatable. Defaults to non-approval stages", collect, [] as string[])
-  .option("--approve <gate-id>", "operator gate id approved for an explicitly selected approval-required stage; repeatable", collect, [] as string[])
-  .option("--satisfy <requirement>", "external requirement/operator gate already satisfied; repeatable", collect, [] as string[])
-  .option("--check-env", "block selected stages when their plan-declared environment variables are unset", false)
-  .option("--report <path>", "write the token-free runner result JSON to this path")
-  .option("--continue-on-error", "continue executing later selected stages after a command failure", false)
-  .action(async (opts: HarnessPlatformCutoverRunCliOptions) => {
-    try {
-      const result = await runHarnessPlatformCutoverPlan(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-cutover-env-check")
-  .description("check token-free environment requirements from a platform cutover plan")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to stdin")
-  .option("--stage <id>", "stage id whose env requirements should be checked; repeatable. Defaults to every listed variable", collect, [] as string[])
-  .option("--report <path>", "write the token-free env check result JSON to this path")
-  .action(async (opts: HarnessPlatformCutoverEnvCheckCliOptions) => {
-    try {
-      const result = await runHarnessPlatformCutoverEnvCheck(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-cutover-bundle")
-  .description("export a token-free operator bundle from a platform cutover plan")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to stdin")
-  .requiredOption("--out <dir>", "output directory for the operator bundle")
-  .action(async (opts: HarnessPlatformCutoverBundleCliOptions) => {
-    try {
-      const result = await writeHarnessPlatformCutoverBundle(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-cutover-bundle-verify")
-  .description("verify a token-free platform cutover operator bundle")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--forbid <value>", "secret or forbidden value that must not appear in bundle files; repeatable", collect, [] as string[])
-  .option("--forbid-env <name>", "env var whose value must not appear in bundle files; repeatable", collect, [] as string[])
-  .option("--report <path>", "write the verification report to a JSON file")
-  .action((opts: HarnessPlatformCutoverBundleVerifyCliOptions) => {
-    try {
-      const result = verifyHarnessPlatformCutoverBundle(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-handoff-install")
-  .description("install the generated GitHub Actions workflow from an operator bundle")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--repo-root <path>", "repository root where .github/workflows should be written; defaults to the bundle parent")
-  .option("--report <path>", "write the token-free CI handoff install report to a JSON file")
-  .action(async (opts: PlatformCiHandoffInstallCliOptions) => {
-    try {
-      const result = await installPlatformCiHandoff(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-secrets-plan")
-  .description("emit token-free GitHub Actions secret setup commands from external-secrets.json")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--repo <owner/repo>", "GitHub repository for gh secret commands")
-  .option("--gh-bin <path>", "gh executable used in emitted command args", "gh")
-  .option("--report <path>", "write the token-free CI secrets plan report to a JSON file")
-  .action(async (opts: PlatformCiSecretsPlanCliOptions) => {
-    try {
-      const result = createPlatformCiSecretsPlan(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-run-proof")
-  .description("write token-free GitHub Actions strict staging run proof")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--repo-root <path>", "repository root containing .github/workflows; defaults to the bundle parent")
-  .requiredOption("--phase <phase>", "workflow_dispatch phase that ran: pre-serve, post-serve, or all")
-  .option("--status <status>", "GitHub Actions job status to record", "success")
-  .option("--report <path>", "write the token-free CI run proof report to a JSON file")
-  .action(async (opts: PlatformCiRunProofCliOptions) => {
-    try {
-      const result = createPlatformCiRunProof(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-workflow-dispatch")
-  .description("dispatch the generated GitHub Actions workflow and record the new run id without token values")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--phase <phase>", "workflow_dispatch phase: pre-serve, post-serve, or all", "pre-serve")
-  .option("--workflow <file>", "workflow file name", "github-actions-staging.yml")
-  .option("--repo <owner/repo>", "GitHub repository for gh commands")
-  .option("--loom-bin <value>", "workflow input loom_bin", "loom")
-  .option("--bundle-dir <value>", "workflow input bundle_dir", "cutover-bundle")
-  .option("--node-version <value>", "workflow input node_version", "22")
-  .option("--bootstrap-source-tree <value>", "workflow input bootstrap_source_tree", "true")
-  .option("--ref <ref>", "branch or tag ref for gh workflow run")
-  .option("--gh-bin <path>", "gh executable to run", "gh")
-  .option("--report <path>", "write the token-free CI workflow dispatch report to a JSON file")
-  .action(async (opts: PlatformCiWorkflowDispatchCliOptions) => {
-    try {
-      const result = await dispatchPlatformCiWorkflow(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-workflow-wait")
-  .description("wait for a dispatched GitHub Actions workflow run without storing command output")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--run-id <id>", "GitHub Actions run id; defaults to reports/ci-workflow-dispatch.json")
-  .option("--repo <owner/repo>", "GitHub repository for gh commands; defaults to reports/ci-workflow-dispatch.json")
-  .option("--phase <phase>", "workflow_dispatch phase: pre-serve, post-serve, or all")
-  .option("--interval-seconds <seconds>", "gh run watch refresh interval", "10")
-  .option("--gh-bin <path>", "gh executable to run", "gh")
-  .option("--report <path>", "write the token-free CI workflow wait report to a JSON file")
-  .action(async (opts: PlatformCiWorkflowWaitCliOptions) => {
-    try {
-      const result = await waitForPlatformCiWorkflow(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-artifact-import")
-  .description("import downloaded GitHub Actions strict staging reports into an operator bundle")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .requiredOption("--artifact-dir <dir>", "downloaded GitHub Actions artifact directory; may contain reports/ or report JSON files")
-  .requiredOption("--phase <phase>", "workflow_dispatch phase whose expected reports should be imported: pre-serve, post-serve, or all")
-  .option("--run-id <id>", "expected GitHub Actions run id for ci-run-proof.json; defaults to reports/ci-artifact-sync.json")
-  .option("--report <path>", "write the token-free CI artifact import report to a JSON file")
-  .action(async (opts: PlatformCiArtifactImportCliOptions) => {
-    try {
-      const result = await importPlatformCiArtifactReports(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-ags-evidence-import")
-  .description("import downloaded AGS evidence reports and refresh operator cockpit artifacts")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .requiredOption("--artifact-dir <dir>", "downloaded AGS evidence artifact directory inside the operator bundle; may contain reports/ or report JSON files")
-  .option("--phase <phase>", "workflow_dispatch phase whose expected AGS reports should be imported: pre-serve, post-serve, or all", "pre-serve")
-  .option("--run-id <id>", "expected GitHub Actions run id for phase-bound reports")
-  .option("--repo-root <path>", "repository root used when refreshing operator CI handoff commands")
-  .option("--repo <owner/repo>", "GitHub repository used when refreshing operator CI handoff commands")
-  .option("--ref <ref>", "branch or tag ref used when refreshing operator CI handoff commands")
-  .option("--require-external-staging", "write operator status with strict external staging required", false)
-  .option("--require-operator-approvals", "write operator status with operator approvals required", false)
-  .option("--require-agent-git-service", "write operator status with AGS evidence required", false)
-  .option("--report <path>", "write the token-free AGS evidence import wrapper report to a JSON file")
-  .action(async (opts: PlatformOperatorAgsEvidenceImportCliOptions) => {
-    try {
-      const result = await importPlatformOperatorAgsEvidence(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.artifactImportOk ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-ags-evidence-sync")
-  .description("download GitHub Actions reports and focused-import AGS evidence into an operator bundle")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--run-id <id>", "GitHub Actions run id; defaults to audited workflow wait/dispatch reports, then ci-run-proof.json")
-  .option("--repo <owner/repo>", "GitHub repository for gh commands and refreshed operator CI handoff commands")
-  .option("--phase <phase>", "workflow_dispatch phase whose expected AGS reports should be imported: pre-serve, post-serve, or all", "pre-serve")
-  .option("--artifact-name <name>", "GitHub Actions artifact name", "loom-staging-reports")
-  .option("--download-dir <dir>", "directory where gh should extract the artifact")
-  .option("--import-report <path>", "write the token-free AGS evidence import report to this path")
-  .option("--gh-bin <path>", "gh executable to run", "gh")
-  .option("--repo-root <path>", "repository root used when refreshing operator CI handoff commands")
-  .option("--ref <ref>", "branch or tag ref used when refreshing operator CI handoff commands")
-  .option("--require-external-staging", "write operator status with strict external staging required", false)
-  .option("--require-operator-approvals", "write operator status with operator approvals required", false)
-  .option("--require-agent-git-service", "write operator status with AGS evidence required", false)
-  .option("--report <path>", "write the token-free AGS evidence sync wrapper report to a JSON file")
-  .action(async (opts: PlatformOperatorAgsEvidenceSyncCliOptions) => {
-    try {
-      const result = await syncPlatformOperatorAgsEvidence(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.artifactSyncOk ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-artifact-sync")
-  .description("download a GitHub Actions staging reports artifact with gh and import it into an operator bundle")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--run-id <id>", "GitHub Actions run id; defaults to audited workflow wait/dispatch reports, then ci-run-proof.json")
-  .option("--repo <owner/repo>", "GitHub repository for gh commands; defaults to audited workflow wait/dispatch reports, then ci-run-proof.json")
-  .option("--phase <phase>", "workflow_dispatch phase whose expected reports should be imported; defaults to the CI run proof phase")
-  .option("--artifact-name <name>", "GitHub Actions artifact name", "loom-staging-reports")
-  .option("--download-dir <dir>", "directory where gh should extract the artifact")
-  .option("--import-report <path>", "write the token-free CI artifact import report to this path")
-  .option("--gh-bin <path>", "gh executable to run", "gh")
-  .option("--report <path>", "write the token-free CI artifact sync report to a JSON file")
-  .action(async (opts: PlatformCiArtifactSyncCliOptions) => {
-    try {
-      const result = await syncPlatformCiArtifactReports(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-handoff-run")
-  .description("install, dispatch, wait for, and sync a GitHub Actions staging handoff")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--repo-root <path>", "repository root where .github/workflows should be written; defaults to the bundle parent")
-  .option("--phase <phase>", "workflow_dispatch phase: pre-serve, post-serve, or all", "post-serve")
-  .option("--workflow <file>", "workflow file name", "github-actions-staging.yml")
-  .option("--loom-bin <value>", "workflow input loom_bin", "loom")
-  .option("--bundle-dir <value>", "workflow input bundle_dir", "cutover-bundle")
-  .option("--node-version <value>", "workflow input node_version", "22")
-  .option("--bootstrap-source-tree <value>", "workflow input bootstrap_source_tree", "true")
-  .option("--repo <owner/repo>", "GitHub repository for gh commands")
-  .option("--ref <ref>", "branch or tag ref for gh workflow run")
-  .option("--target <path>", "token-free JSON file with GitHub Actions repo/ref target")
-  .option("--interval-seconds <seconds>", "gh run watch refresh interval", "10")
-  .option("--artifact-name <name>", "GitHub Actions artifact name", "loom-staging-reports")
-  .option("--download-dir <dir>", "directory where gh should extract the artifact")
-  .option("--gh-bin <path>", "gh executable to run", "gh")
-  .option("--preflight", "run GitHub CLI and workflow visibility preflight before installing or dispatching", false)
-  .option("--resume", "reuse existing successful dispatch/wait reports instead of creating a new run", false)
-  .option("--require-external-staging", "write operator status with strict external staging required", false)
-  .option("--require-operator-approvals", "write operator status with operator approvals required", false)
-  .option("--require-agent-git-service", "write operator status with AGS evidence required", false)
-  .option("--report <path>", "write the token-free CI handoff run report to a JSON file")
-  .action(async (opts: PlatformCiHandoffRunCliOptions) => {
-    try {
-      const result = await runPlatformCiHandoff(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-workflow-publish-plan")
-  .description("emit token-free git and gh commands for publishing the staging workflow")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--repo-root <path>", "repository root where .github/workflows should be written; defaults to the bundle parent")
-  .option("--workflow <file>", "workflow file name", "github-actions-staging.yml")
-  .option("--repo <owner/repo>", "GitHub repository for gh commands")
-  .option("--ref <ref>", "branch or tag ref containing the workflow")
-  .option("--report <path>", "write the token-free workflow publish plan to a JSON file")
-  .action(async (opts: PlatformCiWorkflowPublishPlanCliOptions) => {
-    try {
-      const result = createPlatformCiWorkflowPublishPlan(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-ci-handoff-preflight")
-  .description("check local and GitHub CLI readiness before running the CI handoff")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked")
-  .option("--workflow <file>", "workflow file name", "github-actions-staging.yml")
-  .option("--repo <owner/repo>", "GitHub repository for gh commands")
-  .option("--ref <ref>", "branch or tag ref containing the workflow")
-  .option("--target <path>", "token-free JSON file with GitHub Actions repo/ref target")
-  .option("--gh-bin <path>", "gh executable to run", "gh")
-  .option("--report <path>", "write the token-free CI handoff preflight report to a JSON file")
-  .action(async (opts: PlatformCiHandoffPreflightCliOptions) => {
-    try {
-      const result = await checkPlatformCiHandoffPreflight(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
   .command("upstream-agent-git-service-handoff")
   .description("write a token-free upstream AGS operator handoff readiness report")
   .requiredOption("--dir <dir>", "operator bundle directory")
@@ -1145,239 +567,6 @@ harness
     }
   });
 harness
-  .command("platform-staging-evidence")
-  .description("write token-free pre-serve staging evidence from platform cutover reports")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to <dir>/plan.json")
-  .option("--forbid <value>", "secret or forbidden value that must not appear in pre-serve report files; repeatable", collect, [] as string[])
-  .option("--forbid-env <name>", "env var whose value must not appear in pre-serve report files; repeatable", collect, [] as string[])
-  .option("--report <path>", "write the token-free platform-staging-evidence manifest to a JSON file")
-  .option("--require-external-staging", "fail unless staging-targets, preflight, and AGS compat prove external staging", false)
-  .action((opts: HarnessPlatformStagingEvidenceCliOptions) => {
-    try {
-      const result = writeHarnessPlatformStagingEvidence(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-external-staging-audit")
-  .description("audit token-free readiness for strict external pre-serve staging")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to <dir>/plan.json")
-  .option("--forbid <value>", "secret or forbidden value that must not appear in pre-serve report files; repeatable", collect, [] as string[])
-  .option("--forbid-env <name>", "env var whose value must not appear in pre-serve report files; repeatable", collect, [] as string[])
-  .option("--report <path>", "write the token-free external staging audit JSON to a file")
-  .action(async (opts: HarnessPlatformExternalStagingAuditCliOptions) => {
-    try {
-      const result = await writeHarnessPlatformExternalStagingAudit(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-staging-prerequisites")
-  .description("audit local operator prerequisites before strict external staging")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to <dir>/plan.json")
-  .option("--forbid <value>", "secret or forbidden value that must not appear in bundle files; repeatable", collect, [] as string[])
-  .option("--forbid-env <name>", "env var whose value must not appear in bundle files; repeatable", collect, [] as string[])
-  .option("--require-agent-git-service", "require upstream agent-git-service handoff and server env prerequisites", false)
-  .option("--report <path>", "write the token-free staging prerequisites JSON to a file")
-  .action(async (opts: HarnessPlatformStagingPrerequisitesCliOptions) => {
-    try {
-      const result = await writeHarnessPlatformStagingPrerequisites(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-staging-targets")
-  .description("classify platform cutover targets as local rehearsal or external staging")
-  .requiredOption("--plan <path>", "platform-cutover-plan JSON file")
-  .option("--require-external", "fail unless targets are external LiteLLM/Coder/agent-git-service staging", false)
-  .option("--report <path>", "write the token-free platform-staging-targets report to a JSON file")
-  .action((opts: HarnessPlatformStagingTargetsCliOptions) => {
-    try {
-      const result = writeHarnessPlatformStagingTargets(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-staging-targets-plan")
-  .description("emit token-free replacement steps for placeholder external staging targets")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to <dir>/plan.json")
-  .option("--report <path>", "write the token-free staging targets replacement plan to a JSON file")
-  .action(async (opts: PlatformStagingTargetsPlanCliOptions) => {
-    try {
-      const result = createPlatformStagingTargetsPlan(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-staging-targets-env-check")
-  .description("validate replacement env names for real external staging targets without printing values")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--report <path>", "write the token-free staging target env check to a JSON file")
-  .action(async (opts: PlatformStagingTargetsEnvCheckCliOptions) => {
-    try {
-      const result = createPlatformStagingTargetsEnvCheck(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-staging-targets-apply")
-  .description("validate replacement env names, write plan.real-targets.json, and prove strict external targets")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to <dir>/plan.json")
-  .option("--input <path>", "read real staging target replacements from a local JSON file instead of LOOM_REAL_* env names")
-  .option("--report <path>", "write the token-free staging target apply report to a JSON file")
-  .action(async (opts: HarnessPlatformStagingTargetsApplyCliOptions) => {
-    try {
-      const result = await writeHarnessPlatformStagingTargetsApply(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-staging-verdict")
-  .description("turn token-free platform-staging-evidence into an operator serve-start verdict")
-  .requiredOption("--evidence <path>", "platform-staging-evidence JSON file")
-  .option("--report <path>", "write the token-free staging verdict JSON to this path")
-  .action((opts: HarnessPlatformStagingVerdictCliOptions) => {
-    try {
-      const result = writeHarnessPlatformStagingVerdict(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-serve-ready")
-  .description("write token-free post-serve evidence that the harness server is reachable")
-  .option("--plan <path>", "platform-cutover-plan JSON file used to derive server URL/profile")
-  .option("--url <url>", "harness server base URL; overrides plan.serverUrl")
-  .option("--profile <profile>", "expected serve profile: online-sandbox|platform-readiness; overrides plan.profile")
-  .option("--token-env <name>", "env var containing a token for /status; overrides token env inferred from the plan")
-  .option("--report <path>", "write the token-free serve-ready JSON to this path")
-  .action(async (opts: HarnessPlatformServeReadyCliOptions) => {
-    try {
-      const result = await writeHarnessPlatformServeReady(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-cutover-artifacts-verify")
-  .description("verify token-free operator reports produced from a platform cutover bundle")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to <dir>/plan.json")
-  .option("--forbid <value>", "secret or forbidden value that must not appear in report files; repeatable", collect, [] as string[])
-  .option("--forbid-env <name>", "env var whose value must not appear in report files; repeatable", collect, [] as string[])
-  .option("--report <path>", "write the artifacts verification report to a JSON file")
-  .option("--staging-evidence-report <path>", "write the token-free platform-staging-evidence manifest to a JSON file")
-  .option("--require-external-staging", "fail unless staging-targets and preflight prove external LiteLLM/Coder/agent-git-service staging", false)
-  .option("--require-operator-approvals", "fail unless approval-required mutating stage run reports are present and ok", false)
-  .option("--require-operator-cockpit-runner-execute", "fail unless the final operator cockpit runner execute report is present and ok", false)
-  .action((opts: HarnessPlatformCutoverArtifactsVerifyCliOptions) => {
-    try {
-      const result = verifyHarnessPlatformCutoverArtifacts(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-staging-run")
-  .description("run token-free strict pre-serve staging checks from an operator bundle")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to <dir>/plan.json")
-  .option("--forbid <value>", "secret or forbidden value that must not appear in generated reports; repeatable", collect, [] as string[])
-  .option("--forbid-env <name>", "env var whose value must not appear in generated reports; repeatable", collect, [] as string[])
-  .option("--report <path>", "write the staging run JSON to a file")
-  .option("--require-external-staging", "fail unless staging-targets and preflight prove external LiteLLM/Coder/agent-git-service staging", false)
-  .action(async (opts: HarnessPlatformStagingRunCliOptions) => {
-    try {
-      const result = await runHarnessPlatformStagingRun(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-staging-proof")
-  .description("write one token-free proof from staging and cutover artifacts")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--plan <path>", "platform-cutover-plan JSON file; defaults to <dir>/plan.json")
-  .option("--forbid <value>", "secret or forbidden value that must not appear in proof input reports; repeatable", collect, [] as string[])
-  .option("--forbid-env <name>", "env var whose value must not appear in proof input reports; repeatable", collect, [] as string[])
-  .option("--report <path>", "write the staging proof JSON to a file")
-  .option("--require-external-staging", "fail unless staging-targets and preflight prove external LiteLLM/Coder/agent-git-service staging", false)
-  .option("--require-operator-approvals", "fail unless operator-artifacts proves approval-required mutating stage run reports", false)
-  .action((opts: HarnessPlatformStagingProofCliOptions) => {
-    try {
-      const result = writeHarnessPlatformStagingProof(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-approvals")
-  .description("summarize approval-required staging CI gates and their run reports")
-  .requiredOption("--dir <dir>", "operator bundle directory")
-  .option("--staging-ci <path>", "staging-ci JSON file; defaults to <dir>/staging-ci.json")
-  .option("--report <path>", "write the operator approval summary JSON to a file")
-  .action((opts: HarnessPlatformOperatorApprovalsCliOptions) => {
-    try {
-      const result = writeHarnessPlatformOperatorApprovals(opts);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
   .command("cutover-report")
   .description("read a running harness server and summarize platform/AGS cutover readiness")
   .option("--url <url>", "harness server base URL", "http://127.0.0.1:8787")
@@ -1396,287 +585,6 @@ harness
   .action(async (opts: HarnessCutoverReportCliOptions) => {
     try {
       const result = await readHarnessCutoverReportViaHarness(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-concurrency-audit")
-  .description("audit token-free cutover/smoke evidence for multi-agent concurrency readiness")
-  .requiredOption("--cutover-report <path>", "cutover-report JSON file")
-  .requiredOption("--smoke-report <path>", "platform-readiness smoke JSON file")
-  .option("--control-plane-provider <provider>", CONTROL_PLANE_PROVIDER_HELP)
-  .option("--require-agent-git-service", "require AGS project-agent cutover evidence", false)
-  .option("--report <path>", "write the token-free concurrency audit JSON to this path")
-  .action(async (opts: HarnessPlatformConcurrencyAuditCliOptions) => {
-    try {
-      const result = writeHarnessPlatformConcurrencyAudit(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-goal-audit")
-  .description("audit whether current reports still satisfy the multi-user online sandbox harness-loop target")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--require-external-staging", "fail unless strict external staging proof is present", false)
-  .option("--require-operator-approvals", "fail unless approval-required stage proof is present", false)
-  .option("--require-agent-git-service", "fail unless agent-git-service provider cutover evidence is present", false)
-  .option("--report <path>", "write the token-free platform-goal-audit report to a JSON file")
-  .action(async (opts: PlatformGoalAuditCliOptions) => {
-    try {
-      const result = createPlatformGoalAudit(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-handoff-packet")
-  .description("export a token-free external operator handoff packet")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .option("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .option("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--require-external-staging", "require strict external staging proof in the source status goal audit", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in the source status goal audit", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in the source status goal audit", false)
-  .option("--report <path>", "write the token-free platform-operator-handoff-packet report to a JSON file")
-  .action(async (opts: PlatformOperatorHandoffPacketCliOptions) => {
-    try {
-      const result = createPlatformOperatorHandoffPacket(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = 0;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-status")
-  .description("summarize the token-free operator bundle phase and next staging command")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .option("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .option("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--require-external-staging", "require strict external staging proof in the goal audit", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in the goal audit", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in the goal audit", false)
-  .option("--report <path>", "write the token-free platform-operator-status report to a JSON file")
-  .action(async (opts: PlatformOperatorStatusCliOptions) => {
-    try {
-      const result = createPlatformOperatorStatus(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-github-actions-target-input")
-  .description("write GitHub Actions repo/ref target input and refresh operator cockpit artifacts")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .requiredOption("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .requiredOption("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--require-external-staging", "require strict external staging proof in the refreshed status goal audit", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in the refreshed status goal audit", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in the refreshed status goal audit", false)
-  .option("--report <path>", "write the token-free platform-operator-github-actions-target-input report to a JSON file")
-  .action(async (opts: PlatformOperatorGithubActionsTargetInputCliOptions) => {
-    try {
-      const result = writePlatformOperatorGithubActionsTargetInput(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = 0;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-real-staging-target-input")
-  .description("write real staging target input from a local JSON file and refresh operator cockpit artifacts")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .requiredOption("--input <path>", "local platform-staging-targets-input/v1 JSON file with real non-placeholder target values")
-  .option("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .option("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--require-external-staging", "require strict external staging proof in the refreshed status goal audit", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in the refreshed status goal audit", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in the refreshed status goal audit", false)
-  .option("--report <path>", "write the token-free platform-operator-real-staging-target-input report to a JSON file")
-  .action(async (opts: PlatformOperatorRealStagingTargetInputCliOptions) => {
-    try {
-      const result = writePlatformOperatorRealStagingTargetInput(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-real-staging-targets-apply")
-  .description("apply real staging target input, optionally refresh the bundle, and refresh operator cockpit artifacts")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .option("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .option("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--expected-input-sha256 <sha>", "only apply when real-staging-targets.input.json matches this sha256")
-  .option("--auto-refresh-bundle", "refresh plan.json, manifest, sanitized target reports, and cockpit artifacts after a successful apply", false)
-  .option("--require-external-staging", "require strict external staging proof in the refreshed status goal audit", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in the refreshed status goal audit", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in the refreshed status goal audit", false)
-  .option("--report <path>", "write the token-free platform-operator-real-staging-targets-apply report to a JSON file")
-  .action(async (opts: PlatformOperatorRealStagingTargetsApplyCliOptions) => {
-    try {
-      const result = await applyPlatformOperatorRealStagingTargets(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-target-input-template")
-  .description("write the missing real staging target input template and refresh operator cockpit artifacts")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .option("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .option("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--require-external-staging", "require strict external staging proof in the refreshed status goal audit", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in the refreshed status goal audit", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in the refreshed status goal audit", false)
-  .option("--overwrite", "overwrite an existing input file with the blank template", false)
-  .option("--report <path>", "write the token-free platform-operator-target-input-template report to a JSON file")
-  .action(async (opts: PlatformOperatorTargetInputTemplateCliOptions) => {
-    try {
-      const result = writePlatformOperatorTargetInputTemplate(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-cockpit-plan")
-  .description("export the token-free ordered operator cockpit handoff plan")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .option("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .option("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--require-external-staging", "require strict external staging proof in the source status goal audit", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in the source status goal audit", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in the source status goal audit", false)
-  .option("--report <path>", "write the token-free platform-operator-cockpit-plan report to a JSON file")
-  .action(async (opts: PlatformOperatorStatusCliOptions) => {
-    try {
-      const result = createPlatformOperatorStatus(opts).cockpitPlan;
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = 0;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-cockpit-next")
-  .description("export the token-free next operator cockpit action")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .option("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .option("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--require-external-staging", "require strict external staging proof in the source status goal audit", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in the source status goal audit", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in the source status goal audit", false)
-  .option("--report <path>", "write the token-free platform-operator-cockpit-next report to a JSON file")
-  .action(async (opts: PlatformOperatorStatusCliOptions) => {
-    try {
-      const result = createPlatformOperatorCockpitNext(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = 0;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-handoff-runner")
-  .description("consume the token-free operator handoff packet and optionally execute a selected command ref")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports/operator-handoff-packet.json", process.cwd())
-  .option("--packet <path>", "explicit platform-operator-handoff-packet report path")
-  .requiredOption("--blocking-group <id>", "blocking group id for the selected commandRef")
-  .requiredOption("--label <label>", "commandRef label to select inside the blocking group")
-  .option("--step <id>", "optional step id for disambiguating flattened commandRefs")
-  .option("--execute", "execute commandRef.commandArgs; default is dry-run", false)
-  .option("--report <path>", "write the token-free platform-operator-handoff-runner report to a JSON file")
-  .action(async (opts: PlatformOperatorHandoffRunnerCliOptions) => {
-    try {
-      const result = await runPlatformOperatorHandoffRunner(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-cockpit-runner")
-  .description("consume the token-free next operator cockpit action and optionally execute a ready command")
-  .option("--dir <path>", "operator bundle or report root; reads <dir>/reports/operator-cockpit-next.json", process.cwd())
-  .option("--next <path>", "explicit platform-operator-cockpit-next report path")
-  .option("--execute", "execute commandRef.commandArgs when the next action is ready-to-run", false)
-  .option("--report <path>", "write the token-free platform-operator-cockpit-runner report to a JSON file")
-  .action(async (opts: PlatformOperatorCockpitRunnerCliOptions) => {
-    try {
-      const result = await runPlatformOperatorCockpitRunner(opts);
-      await writeJsonReportIfRequested(opts.report, result);
-      console.log(JSON.stringify(result, null, 2));
-      process.exitCode = result.ok ? 0 : 1;
-    } catch (error) {
-      console.error(error instanceof Error ? error.message : String(error));
-      process.exitCode = 1;
-    }
-  });
-harness
-  .command("platform-operator-cockpit-loop")
-  .description("refresh operator cockpit artifacts and run the next cockpit action until blocked or complete")
-  .option("--dir <path>", "operator bundle or report root; reads and writes <dir>/reports", process.cwd())
-  .option("--repo-root <path>", "repository root where .github/workflows should be checked; defaults to the nearest git root, then bundle parent")
-  .option("--repo <owner/repo>", "GitHub repository for CI handoff commands")
-  .option("--ref <ref>", "GitHub branch or ref for CI handoff commands")
-  .option("--require-external-staging", "require strict external staging proof in refreshed operator status", false)
-  .option("--require-operator-approvals", "require approval-required stage proof in refreshed operator status", false)
-  .option("--require-agent-git-service", "require agent-git-service provider cutover evidence in refreshed operator status", false)
-  .option("--execute", "execute ready commandRef.commandArgs instead of stopping after dry-run", false)
-  .option("--max-steps <count>", "maximum executed ready-to-run steps before stopping", "1")
-  .option("--report <path>", "write the token-free platform-operator-cockpit-loop report to a JSON file")
-  .action(async (opts: PlatformOperatorCockpitLoopCliOptions) => {
-    try {
-      const result = await runPlatformOperatorCockpitLoop(opts);
       await writeJsonReportIfRequested(opts.report, result);
       console.log(JSON.stringify(result, null, 2));
       process.exitCode = result.ok ? 0 : 1;
@@ -3665,10 +2573,6 @@ interface HarnessRehearsalResult {
   operatorBundle?: HarnessPlatformCutoverBundleResult;
   operatorBundleVerified?: boolean;
   operatorBundleVerify?: HarnessPlatformCutoverBundleVerifyResult;
-  operatorApprovalsChecked?: boolean;
-  operatorApprovals?: HarnessPlatformOperatorApprovalsResult;
-  operatorCockpitRunnerExecuteChecked?: boolean;
-  operatorCockpitRunnerExecute?: PlatformOperatorCockpitRunnerResult;
   operatorArtifactsVerified?: boolean;
   operatorArtifactsVerify?: HarnessPlatformCutoverArtifactsVerifyResult;
   operatorArtifactsChecked?: boolean;
@@ -5274,15 +4178,6 @@ async function runHarnessRehearsal(options: HarnessRehearsalCliOptions): Promise
     if (operatorRunApproved && !operatorRunApproved.ok) {
       throw new Error(`rehearsal operator approved run failed: ${JSON.stringify(operatorRunApproved.failed)}`);
     }
-    const operatorApprovals = operatorBundle && operatorRunApproved
-      ? await writeHarnessRehearsalOperatorApprovals({
-          operatorBundle,
-          operatorRunApproved,
-        })
-      : undefined;
-    if (operatorApprovals && !operatorApprovals.ok) {
-      throw new Error(`rehearsal operator approvals failed: ${JSON.stringify(operatorApprovals)}`);
-    }
     const cutoverReport = await readHarnessCutoverReportViaHarness({
       url: harnessAddress.url,
       tenant,
@@ -5307,22 +4202,12 @@ async function runHarnessRehearsal(options: HarnessRehearsalCliOptions): Promise
       controlPlaneProvider,
       controlPlaneWebhookSecretEnv: REHEARSAL_WEBHOOK_SECRET_ENV,
     });
-    const operatorCockpitRunnerExecute = operatorBundle
-      ? await writeHarnessRehearsalOperatorCockpitRunnerExecute({
-          operatorBundle,
-          requireAgentGitService: controlPlaneProvider === "agent-git-service",
-        })
-      : undefined;
-    if (operatorCockpitRunnerExecute && !operatorCockpitRunnerExecute.ok) {
-      throw new Error(`rehearsal operator cockpit runner execute failed: ${JSON.stringify(operatorCockpitRunnerExecute.missing)}`);
-    }
     const operatorArtifactsVerify = operatorBundle && operatorRunPlanPath && operatorBundleVerify && operatorRunSafe
       ? await writeHarnessRehearsalOperatorArtifactsVerify({
           operatorBundle,
           operatorPlanPath: operatorRunPlanPath,
           operatorBundleVerify,
           operatorRunSafe,
-          operatorCockpitRunnerExecute,
           cutoverReport,
           smoke,
           forbiddenValues: operatorForbiddenValues,
@@ -5337,8 +4222,6 @@ async function runHarnessRehearsal(options: HarnessRehearsalCliOptions): Promise
           operatorBundleVerify,
           operatorRunSafe,
           operatorRunApproved,
-          operatorApprovals,
-          operatorCockpitRunnerExecute,
           operatorArtifactsVerify,
           cutoverReport,
           smoke,
@@ -5387,8 +4270,6 @@ async function runHarnessRehearsal(options: HarnessRehearsalCliOptions): Promise
       ...(operatorRunApproved ? { operatorRunApproved } : {}),
       ...(operatorBundle ? { operatorBundleChecked: true, operatorBundle } : {}),
       ...(operatorBundleVerify ? { operatorBundleVerified: true, operatorBundleVerify } : {}),
-      ...(operatorApprovals ? { operatorApprovalsChecked: true, operatorApprovals } : {}),
-      ...(operatorCockpitRunnerExecute ? { operatorCockpitRunnerExecuteChecked: true, operatorCockpitRunnerExecute } : {}),
       ...(operatorArtifactsVerify ? { operatorArtifactsVerified: true, operatorArtifactsVerify } : {}),
       ...(operatorArtifactSummary ? { operatorArtifactsChecked: true, operatorArtifactSummary } : {}),
       cutoverReport,
@@ -5503,44 +4384,11 @@ async function writeRehearsalLoomWrapper(path: string): Promise<void> {
   await chmod(path, 0o755);
 }
 
-async function writeHarnessRehearsalOperatorCockpitRunnerExecute(options: {
-  operatorBundle: HarnessPlatformCutoverBundleResult;
-  requireAgentGitService: boolean;
-}): Promise<PlatformOperatorCockpitRunnerResult> {
-  const dir = options.operatorBundle.outDir;
-  const reportDir = join(dir, "reports");
-  mkdirSync(reportDir, { recursive: true });
-  const status = createPlatformOperatorStatus({
-    dir,
-    requireOperatorApprovals: true,
-    requireAgentGitService: options.requireAgentGitService,
-    report: join(reportDir, "operator-status.json"),
-  });
-  await writeJsonReport(join(reportDir, "operator-status.json"), status);
-  await writeJsonReport(join(reportDir, "operator-cockpit-plan.json"), status.cockpitPlan);
-  await writeJsonReport(
-    join(reportDir, "operator-cockpit-next.json"),
-    createPlatformOperatorCockpitNext({
-      dir,
-      requireOperatorApprovals: true,
-      requireAgentGitService: options.requireAgentGitService,
-    }),
-  );
-  const runner = await runPlatformOperatorCockpitRunner({
-    dir,
-    execute: true,
-    report: join(reportDir, "operator-cockpit-runner-execute.json"),
-  });
-  await writeJsonReport(join(reportDir, "operator-cockpit-runner-execute.json"), runner);
-  return runner;
-}
-
 async function writeHarnessRehearsalOperatorArtifactsVerify(options: {
   operatorBundle: HarnessPlatformCutoverBundleResult;
   operatorPlanPath: string;
   operatorBundleVerify: HarnessPlatformCutoverBundleVerifyResult;
   operatorRunSafe: HarnessPlatformCutoverRunResult;
-  operatorCockpitRunnerExecute?: PlatformOperatorCockpitRunnerResult;
   cutoverReport: HarnessCutoverReport;
   smoke: HarnessSmokeResult;
   forbiddenValues: string[];
@@ -5601,7 +4449,7 @@ async function writeHarnessRehearsalOperatorArtifactsVerify(options: {
     report: join(reportDir, "operator-artifacts.json"),
     forbid: options.forbiddenValues,
     requireOperatorApprovals: true,
-    requireOperatorCockpitRunnerExecute: options.operatorCockpitRunnerExecute?.ok === true,
+    requireOperatorCockpitRunnerExecute: false,
   });
   writeHarnessPlatformStagingProof({
     dir: options.operatorBundle.outDir,
@@ -5690,32 +4538,6 @@ function writeHarnessRehearsalStagingRun(options: {
   return result;
 }
 
-async function writeHarnessRehearsalOperatorApprovals(options: {
-  operatorBundle: HarnessPlatformCutoverBundleResult;
-  operatorRunApproved: HarnessPlatformCutoverRunResult;
-}): Promise<HarnessPlatformOperatorApprovalsResult> {
-  const reportDir = join(options.operatorBundle.outDir, "reports");
-  mkdirSync(reportDir, { recursive: true });
-  const stagingCi = readJsonFile(join(options.operatorBundle.outDir, "staging-ci.json"));
-  const approvals = isPlatformStagingCiManifest(stagingCi) ? stagingCi.operatorApprovals : [];
-  for (const approval of approvals) {
-    const reportName = platformOperatorApprovalReportName(approval.report);
-    await writeJsonReport(
-      join(reportDir, reportName),
-      rehearsalSingleApprovedStageRunReport(
-        options.operatorRunApproved,
-        approval.stageId,
-        approval.gateId,
-        join(reportDir, reportName),
-      ),
-    );
-  }
-  return writeHarnessPlatformOperatorApprovals({
-    dir: options.operatorBundle.outDir,
-    report: join(reportDir, "operator-approvals.json"),
-  });
-}
-
 function rehearsalSingleStageRunReport(
   run: HarnessPlatformCutoverRunResult,
   stageId: string,
@@ -5758,7 +4580,6 @@ async function writeHarnessRehearsalOperatorArtifactSummary(options: {
   operatorRunSafe?: HarnessPlatformCutoverRunResult;
   operatorRunApproved?: HarnessPlatformCutoverRunResult;
   operatorApprovals?: HarnessPlatformOperatorApprovalsResult;
-  operatorCockpitRunnerExecute?: PlatformOperatorCockpitRunnerResult;
   operatorArtifactsVerify?: HarnessPlatformCutoverArtifactsVerifyResult;
   cutoverReport: HarnessCutoverReport;
   smoke: HarnessSmokeResult;
@@ -5789,9 +4610,6 @@ async function writeHarnessRehearsalOperatorArtifactSummary(options: {
     "serve-ready.json",
     "concurrency-audit.json",
     ...operatorProofReports,
-    ...operatorApprovalReports,
-    "operator-approvals.json",
-    "operator-cockpit-runner-execute.json",
     "operator-artifacts.json",
     "staging-proof.json",
     "rehearsal-cutover-report.json",
@@ -5857,7 +4675,7 @@ async function writeHarnessRehearsalOperatorArtifactSummary(options: {
       operatorArtifactsVerifyOk: options.operatorArtifactsVerify?.ok === true,
       operatorApprovalsOk: options.operatorApprovals?.ok === true &&
         options.operatorArtifactsVerify?.gates.operatorApprovalsOk === true,
-      operatorCockpitRunnerExecuteOk: options.operatorCockpitRunnerExecute?.ok === true,
+      operatorCockpitRunnerExecuteOk: false,
       agentGitServiceStagingReady,
       serveReadyOk,
       cutoverReportOk: options.cutoverReport.ok === true,
@@ -9448,18 +8266,6 @@ function writeHarnessPlatformStagingProof(
   return result;
 }
 
-function writeHarnessPlatformOperatorApprovals(
-  options: HarnessPlatformOperatorApprovalsCliOptions,
-): HarnessPlatformOperatorApprovalsResult {
-  const result: HarnessPlatformOperatorApprovalsResult = createPlatformOperatorApprovals(options);
-  const reportPath = options.report ? resolve(options.report) : undefined;
-  if (reportPath) {
-    mkdirSync(dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
-  }
-  return result;
-}
-
 function isPlatformStagingCiManifest(value: unknown): value is HarnessPlatformStagingCiManifest {
   if (!isRecord(value) || value.schemaVersion !== "platform-staging-ci/v1" || value.tokenFree !== true) {
     return false;
@@ -10470,71 +9276,6 @@ function writeHarnessPlatformStagingTargets(
     writeFileSync(reportPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   }
   return result;
-}
-
-async function writeHarnessPlatformStagingTargetsApply(
-  options: HarnessPlatformStagingTargetsApplyCliOptions,
-): Promise<HarnessPlatformStagingTargetsApplyResult> {
-  const dir = resolve(options.dir);
-  const reportPath = options.report ? resolve(options.report) : undefined;
-  const planPath = resolve(options.plan ?? join(dir, "plan.json"));
-  const input = options.input ? platformStagingTargetsInput(resolve(options.input)) : undefined;
-  const realPlanPath = join(dir, "plan.real-targets.json");
-  const reportDir = join(dir, "reports");
-  const envCheckReportPath = join(reportDir, "staging-targets-env-check.json");
-  const realTargetsReportPath = join(reportDir, "real-staging-targets.json");
-  mkdirSync(reportDir, { recursive: true });
-  return withPlatformStagingReplacementEnv(input?.env, async () => {
-    const envCheck = createPlatformStagingTargetsEnvCheck({ dir, report: envCheckReportPath });
-    await writeJsonReportIfRequested(envCheckReportPath, envCheck);
-    const requiredEnvNames = envCheck.requiredEnvNames;
-    const missing = [
-      ...envCheck.missing,
-      ...(input ? input.proof.missing.map((item) => `input.${item}`) : []),
-    ];
-    let realPlanSha256: string | undefined;
-    let realTargetsReportSha256: string | undefined;
-    let realTargetsProofOk = false;
-    if (envCheck.ok) {
-      const realPlanText = `${JSON.stringify(platformStagingRealTargetsPlan(planPath), null, 2)}\n`;
-      writeFileSync(realPlanPath, realPlanText, "utf8");
-      realPlanSha256 = sha256Hex(realPlanText);
-      const realTargets = writeHarnessPlatformStagingTargets({
-        plan: realPlanPath,
-        requireExternal: true,
-        report: realTargetsReportPath,
-      });
-      realTargetsProofOk = realTargets.ok;
-      const realTargetsReportText = readFileSync(realTargetsReportPath, "utf8");
-      realTargetsReportSha256 = sha256Hex(realTargetsReportText);
-      missing.push(...realTargets.missing.map((item) => `realTargets.${item}`));
-    }
-    const gates = {
-      envCheckOk: envCheck.ok,
-      realPlanWritten: realPlanSha256 !== undefined,
-      realTargetsProofOk,
-    };
-    const result: HarnessPlatformStagingTargetsApplyResult = {
-      schemaVersion: "platform-staging-targets-apply/v1",
-      ok: missing.length === 0 && gates.envCheckOk && gates.realPlanWritten && gates.realTargetsProofOk,
-      tokenFree: true,
-      dir,
-      ...(reportPath ? { reportPath } : {}),
-      planPath,
-      realPlanPath,
-      inputSource: input ? "input-file" : "environment",
-      ...(input ? { inputPath: input.path, inputSha256: input.sha256, inputProof: input.proof } : {}),
-      envCheckReportPath,
-      realTargetsReportPath,
-      requiredEnvNames,
-      ...(realPlanSha256 ? { realPlanSha256 } : {}),
-      ...(realTargetsReportSha256 ? { realTargetsReportSha256 } : {}),
-      gates,
-      missing,
-      nextActions: platformStagingTargetsApplyNextActions(missing, input ? "input-file" : "environment"),
-    };
-    return result;
-  });
 }
 
 function platformStagingTargetsInput(path: string): {
@@ -21414,28 +20155,35 @@ function operatorCockpitQueueBackendFlagIssue(value: string | undefined, flag: s
 
 function operatorCockpitQueueAgentGitServiceRepoFlagIssue(value: string | undefined): ServeFlagValidationIssue | undefined {
   if (value === undefined) return undefined;
-  try {
-    normalizeAgentGitServiceOperatorCockpitQueueRepo(value);
-    return undefined;
-  } catch {
+  const repo = value.trim();
+  const match = /^([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)$/.exec(repo);
+  if (!match || match[1] === "." || match[1] === ".." || match[2] === "." || match[2] === ".." || match[1].length > 100 || match[2].length > 100) {
     return {
       flag: "--operator-cockpit-queue-ags-repo",
       message: "--operator-cockpit-queue-ags-repo must be a safe owner/repo value.",
     };
   }
+  return undefined;
 }
 
 function operatorCockpitQueueAgentGitServicePathFlagIssue(value: string | undefined): ServeFlagValidationIssue | undefined {
   if (value === undefined) return undefined;
-  try {
-    normalizeAgentGitServiceOperatorCockpitQueuePath(value);
-    return undefined;
-  } catch {
+  const path = value.trim();
+  const segments = path.split("/");
+  if (
+    path.length === 0 ||
+    path.length > 1024 ||
+    path.startsWith("/") ||
+    path.endsWith("/") ||
+    path.includes("\\") ||
+    segments.some((segment) => !segment || segment === "." || segment === ".." || !/^[A-Za-z0-9._-]+$/.test(segment))
+  ) {
     return {
       flag: "--operator-cockpit-queue-ags-path",
       message: "--operator-cockpit-queue-ags-path must be a safe relative slash-separated path.",
     };
   }
+  return undefined;
 }
 
 interface ServeExecutorSafetyOptions {
