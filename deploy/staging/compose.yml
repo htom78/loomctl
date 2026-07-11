@@ -10,6 +10,8 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+    ports:
+      - "127.0.0.1:15432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
@@ -21,12 +23,15 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+    ports:
+      - "127.0.0.1:16379:6379"
     volumes:
       - redis-data:/data
 
   harness-a:
     build:
       context: ../..
+      dockerfile: deploy/staging/Dockerfile
     command: &harness-command
       - harness
       - serve
@@ -42,8 +47,15 @@ services:
       - loom_staging_v2
       - --state-redis-prefix
       - loom-staging
+      - --executor
+      - docker
+      - --executor-image
+      - node:22-bookworm-slim
+      - --executor-network
+      - none
+      - --executor-home-root
+      - /data/workspaces/.homes
       - --allow-shell
-      - --allow-unsafe-local-executor
       - --max-tenant-active-runs
       - "1"
       - --run-lease-ttl-ms
@@ -68,11 +80,13 @@ services:
     ports:
       - "8787:8787"
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - workspaces:/data/workspaces
 
   harness-b:
     build:
       context: ../..
+      dockerfile: deploy/staging/Dockerfile
     command: *harness-command
     environment: *harness-environment
     depends_on:
@@ -83,6 +97,7 @@ services:
     ports:
       - "8788:8787"
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - workspaces:/data/workspaces
 
 volumes:
