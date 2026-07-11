@@ -17,22 +17,39 @@ import { reportAgentGitServiceWorkspaceHandoffAttachment } from "./gates.js";
 import { controlPlaneIssueUrl } from "./status.js";
 import { ProjectSummary, projectWorkspaceSessionRoot, projectWorkspaceCommandRoot, readTenantProjectSummariesWithActivity, requireProjectExists, ProjectSourceDefaultValues, readProjectSourceDefaults, readAgentGitServiceAgentTokenSecret, projectWorkspaceContext, listTenantProjectNames, isProjectDirectoryName, refreshProjectPresenceFromDisk, projectPresenceEntries } from "./projects.js";
 import { TenantExecutorLimits, TenantAccess, effectiveTenantExecutorLimits, effectiveTenantExecutorTemplateParameters, requireTenantTool, readTenantPolicy, requireTenantAccess, isSafeTenantDirectoryName } from "./tenants.js";
-import { HarnessServerOptions, PullRequestReporterResult, WorkspacePullRequestRequest, readWorkspaceFileJson, readWorkspaceFileMoveJson, readWorkspaceCommandJson, readWorkspaceCommitJson, readWorkspacePullRequestJson, readWorkspaceSessionJson, readWorkspaceSessionInputJson, readWorkspaceClientJson } from "./http.js";
-import { markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, compactObject, compactMetadata, seqAfter, recordData, stringField, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, isSafeDirectoryName, booleanFlag, positiveIntValue, badRequest, payloadTooLarge, conflict, notFound, writeJson, isNotFound, startedAt } from "./shared.js";
+import { HarnessServerOptions, PullRequestReporterResult, WorkspacePullRequestRequest, RunWorkspaceIsolation, HarnessWorkspaceContext } from "./types.js";
+import { markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, compactObject, compactMetadata, seqAfter, recordData, stringField, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, isSafeDirectoryName, booleanFlag, positiveIntValue, badRequest, payloadTooLarge, conflict, notFound, writeJson, isNotFound, startedAt, readJsonBody } from "./shared.js";
 
-type RunWorkspaceIsolation = "project" | "run";
+async function readWorkspaceFileJson(req: IncomingMessage): Promise<WorkspaceFileWriteRequestBody> {
+  return readJsonBody<WorkspaceFileWriteRequestBody>(req);
+}
 
-export interface HarnessWorkspaceContext {
-  tenant: string;
-  project: string;
-  runId: string;
-  cwd: string;
-  repo?: string;
-  branch?: string;
-  baseBranch?: string;
-  issue?: string;
-  executorLimits?: TenantExecutorLimits;
-  executorTemplateParameters?: string[];
+async function readWorkspaceFileMoveJson(req: IncomingMessage): Promise<WorkspaceFileMoveRequestBody> {
+  return readJsonBody<WorkspaceFileMoveRequestBody>(req);
+}
+
+async function readWorkspaceCommandJson(req: IncomingMessage): Promise<WorkspaceCommandRequestBody> {
+  return readJsonBody<WorkspaceCommandRequestBody>(req);
+}
+
+async function readWorkspaceCommitJson(req: IncomingMessage): Promise<WorkspaceCommitRequestBody> {
+  return readJsonBody<WorkspaceCommitRequestBody>(req);
+}
+
+async function readWorkspacePullRequestJson(req: IncomingMessage): Promise<WorkspacePullRequestRequestBody> {
+  return readJsonBody<WorkspacePullRequestRequestBody>(req);
+}
+
+async function readWorkspaceSessionJson(req: IncomingMessage): Promise<WorkspaceSessionRequestBody> {
+  return readJsonBody<WorkspaceSessionRequestBody>(req);
+}
+
+async function readWorkspaceSessionInputJson(req: IncomingMessage): Promise<WorkspaceSessionInputRequestBody> {
+  return readJsonBody<WorkspaceSessionInputRequestBody>(req);
+}
+
+async function readWorkspaceClientJson(req: IncomingMessage): Promise<WorkspaceClientRequestBody> {
+  return readJsonBody<WorkspaceClientRequestBody>(req);
 }
 
 interface WorkspaceFileWriteRequestBody {
@@ -3002,4 +3019,5 @@ function activeWorkspaceKey(tenant: string, project: string, runId?: string): st
   return runId === undefined ? `${tenant}\0${project}` : `${tenant}\0${project}\0${runId}`;
 }
 
-export { RunWorkspaceIsolation, WorkspaceFileWriteRequestBody, WorkspaceFileMoveRequestBody, WorkspaceCommandRequestBody, WorkspaceCommitRequestBody, WorkspacePullRequestRequestBody, WorkspaceSessionRequestBody, WorkspaceSessionInputRequestBody, WorkspaceClientRequestBody, ActiveWorkspaceSession, WorkspaceSessionSummary, WorkspaceCommandSummary, WorkspaceCommandResponse, WorkspaceInfo, WORKSPACE_FILE_READ_LIMIT_BYTES, WORKSPACE_FILE_WRITE_LIMIT_BYTES, WORKSPACE_OUTPUT_LIMIT_BYTES, WORKSPACE_SESSION_INPUT_LIMIT_BYTES, DEFAULT_MAX_WORKSPACE_SESSIONS, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, workspaceCommandTimeoutMs, workspaceSessionIdleTimeoutMs, workspaceDirectoryUsageBytes, activeWorkspaceSessionDetails, statusActiveWorkspaceSessionDetails, handleRunWorkspaceCommand, handleRunScopedWorkspaceCommand, handleCreateWorkspaceCommit, handleCreateRunWorkspaceCommit, handleCreateWorkspacePullRequest, handleCreateRunWorkspacePullRequest, workspacePullRequestRef, handleListWorkspaceCommands, handleListRunWorkspaceCommands, handleCreateWorkspaceSession, handleCreateRunWorkspaceSession, handleListWorkspaceSessions, handleListRunWorkspaceSessions, handleWriteWorkspaceSessionInput, handleStopWorkspaceSession, handleReadWorkspaceSessionEvents, clearWorkspaceSessionIdleTimer, runWorkspaceSessionRoot, runWorkspaceCommandRoot, readWorkspaceCommandSummaries, readWorkspaceSessionSummaries, handleWriteWorkspaceFile, handleWriteRunWorkspaceFile, handleDeleteWorkspaceFile, handleMoveWorkspaceFile, handleMoveRunWorkspaceFile, handleDeleteRunWorkspaceFile, handleReadRunWorkspaceInfo, handleReadRunWorkspaceDiff, workspaceDiff, workspaceInfo, handleReadWorkspaceFile, handleReadRunWorkspaceFile, handleListTenantWorkspaceUsageWarnings, workspaceSessionActivityAt, workspaceExecutor, runWorkspaceContext, compactWorkspaceSessionSummary, workspaceDiffChangedFiles, listWorkspaceTenantNames, activeRunWorkspaceKey, activeRunWorkspaceLeaseKey, runWorkspacesAreIsolated, runWorkspaceIsolation };
+export type { RunWorkspaceIsolation, HarnessWorkspaceContext } from "./types.js";
+export { WorkspaceFileWriteRequestBody, WorkspaceFileMoveRequestBody, WorkspaceCommandRequestBody, WorkspaceCommitRequestBody, WorkspacePullRequestRequestBody, WorkspaceSessionRequestBody, WorkspaceSessionInputRequestBody, WorkspaceClientRequestBody, ActiveWorkspaceSession, WorkspaceSessionSummary, WorkspaceCommandSummary, WorkspaceCommandResponse, WorkspaceInfo, WORKSPACE_FILE_READ_LIMIT_BYTES, WORKSPACE_FILE_WRITE_LIMIT_BYTES, WORKSPACE_OUTPUT_LIMIT_BYTES, WORKSPACE_SESSION_INPUT_LIMIT_BYTES, DEFAULT_MAX_WORKSPACE_SESSIONS, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, workspaceCommandTimeoutMs, workspaceSessionIdleTimeoutMs, workspaceDirectoryUsageBytes, activeWorkspaceSessionDetails, statusActiveWorkspaceSessionDetails, handleRunWorkspaceCommand, handleRunScopedWorkspaceCommand, handleCreateWorkspaceCommit, handleCreateRunWorkspaceCommit, handleCreateWorkspacePullRequest, handleCreateRunWorkspacePullRequest, workspacePullRequestRef, handleListWorkspaceCommands, handleListRunWorkspaceCommands, handleCreateWorkspaceSession, handleCreateRunWorkspaceSession, handleListWorkspaceSessions, handleListRunWorkspaceSessions, handleWriteWorkspaceSessionInput, handleStopWorkspaceSession, handleReadWorkspaceSessionEvents, clearWorkspaceSessionIdleTimer, runWorkspaceSessionRoot, runWorkspaceCommandRoot, readWorkspaceCommandSummaries, readWorkspaceSessionSummaries, handleWriteWorkspaceFile, handleWriteRunWorkspaceFile, handleDeleteWorkspaceFile, handleMoveWorkspaceFile, handleMoveRunWorkspaceFile, handleDeleteRunWorkspaceFile, handleReadRunWorkspaceInfo, handleReadRunWorkspaceDiff, workspaceDiff, workspaceInfo, handleReadWorkspaceFile, handleReadRunWorkspaceFile, handleListTenantWorkspaceUsageWarnings, workspaceSessionActivityAt, workspaceExecutor, runWorkspaceContext, compactWorkspaceSessionSummary, workspaceDiffChangedFiles, listWorkspaceTenantNames, activeRunWorkspaceKey, activeRunWorkspaceLeaseKey, runWorkspacesAreIsolated, runWorkspaceIsolation };

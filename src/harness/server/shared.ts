@@ -14,7 +14,7 @@ import { workspacePullRequestRef } from "./workspace.js";
 import { controlPlaneProviderName } from "./status.js";
 import { projectModelUsageRequesterKey, projectModelUsageRequesterLabel, readProjectSummary, projectContractPatchField } from "./projects.js";
 import { TenantAccess, brainSignalAuditData, tenantRoleField, readTenantPolicy, tenantPolicyFromUnknown, isSafeTenantDirectoryName, requireTenantRole, tenantRoleRank } from "./tenants.js";
-import { HarnessServerOptions, readJsonBody } from "./http.js";
+import { HarnessServerOptions, HTTP_JSON_BODY_LIMIT_BYTES } from "./types.js";
 
 
 interface CancelRequestBody {
@@ -814,6 +814,29 @@ function payloadTooLarge(message: string): Error {
   return error;
 }
 
+async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
+  const raw = await readRawBody(req);
+  try {
+    return JSON.parse(raw.toString("utf8") || "{}") as T;
+  } catch {
+    throw badRequest("invalid JSON body");
+  }
+}
+
+async function readRawBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > HTTP_JSON_BODY_LIMIT_BYTES) throw payloadTooLarge("request body too large");
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks);
+}
+
 function conflict(message: string): Error {
   const error = new Error(message);
   error.name = "Conflict";
@@ -882,4 +905,4 @@ function startedAt(state: RunSummary | RunningRunStatus | QueuedRunStatus): stri
   return "queuedAt" in state ? state.queuedAt : state.startedAt;
 }
 
-export { CancelRequestBody, delay, enforceModelUsageTokenLimitsForBody, enforceModelUsageTokenLimits, markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, hasExplicitAgent, textArray, recordArray, readOptionalJsonObject, readOptionalTextFile, arrayCount, oneLineText, compactStringList, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, compactMetadata, reportIssue, reportPullRequest, reportBrainIngest, writeJsonFileAtomic, seqAfter, filterEvents, boundedDiagnosticText, isSensitiveDiagnosticKey, latestAuditData, replayEntryFromEvent, replayText, recordData, stringField, booleanField, numberField, stringArrayField, stringArrayFieldAllowEmpty, arraysEqual, requireServerStatusAccess, streamQueryToken, safeEqualString, policyStatusAccessKeys, bearerToken, headerValue, readJson, requireSafeName, optionalSafeName, requireString, optionalString, optionalBoolean, optionalClientId, optionalClientRequestId, isSafeDirectoryName, timingSafeHexEqual, envNameValue, optionalEnvNameValue, templateParameterValue, stringArray, allowedToolSubset, booleanFlag, positiveInt, positiveIntValue, positiveNumberValue, nonNegativeNumberValue, dockerMemoryValue, dockerNetworkValue, badRequest, payloadTooLarge, conflict, unauthorized, forbidden, notFound, statusForError, writeJson, writeText, writeHtml, setCorsHeaders, isNotFound, isAlreadyExists, startedAt };
+export { CancelRequestBody, delay, enforceModelUsageTokenLimitsForBody, enforceModelUsageTokenLimits, markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, hasExplicitAgent, textArray, recordArray, readOptionalJsonObject, readOptionalTextFile, arrayCount, oneLineText, compactStringList, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, compactMetadata, reportIssue, reportPullRequest, reportBrainIngest, writeJsonFileAtomic, seqAfter, filterEvents, boundedDiagnosticText, isSensitiveDiagnosticKey, latestAuditData, replayEntryFromEvent, replayText, recordData, stringField, booleanField, numberField, stringArrayField, stringArrayFieldAllowEmpty, arraysEqual, requireServerStatusAccess, streamQueryToken, safeEqualString, policyStatusAccessKeys, bearerToken, headerValue, readJson, requireSafeName, optionalSafeName, requireString, optionalString, optionalBoolean, optionalClientId, optionalClientRequestId, isSafeDirectoryName, timingSafeHexEqual, envNameValue, optionalEnvNameValue, templateParameterValue, stringArray, allowedToolSubset, booleanFlag, positiveInt, positiveIntValue, positiveNumberValue, nonNegativeNumberValue, dockerMemoryValue, dockerNetworkValue, badRequest, payloadTooLarge, conflict, unauthorized, forbidden, notFound, statusForError, writeJson, writeText, writeHtml, setCorsHeaders, isNotFound, isAlreadyExists, startedAt, readJsonBody, readRawBody };

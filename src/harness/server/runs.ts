@@ -18,8 +18,57 @@ import { queuedRunResourceStatus, controlPlaneIssueUrl, publicUrl } from "./stat
 import { VasLiteReviewPresetInput, VAS_LITE_REVIEW_PRESET, VAS_LITE_REVIEW_VERIFY_COMMANDS, requireVasLiteProject, vasLiteReviewPresetInput, readVasLiteCase, listVasLiteLearnings, vasLiteReviewGuidance, vasLiteReviewGoal, vasLiteReviewScript, vasLiteReviewContextStep } from "./vas.js";
 import { ProjectSummary, readProjectSummary, ProjectSourceDefaultValues, applyProjectRunPolicy, readProjectContractEvidence, readProjectContractStatusEvidence, readProjectSourceDefaults, runProjectQuery, listTenantProjectNames, isProjectDirectoryName, runPresenceRootFromProjectRoot, projectPresenceKey, projectPresenceEntries } from "./projects.js";
 import { TenantAccess, effectiveTenantAllowedTools, tenantRoleField, readTenantPolicy, tenantPolicyRole, requireTenantAccess, isSafeTenantDirectoryName, isTenantRole } from "./tenants.js";
-import { HarnessServerOptions, streamEvents, readCancelJson, readRunCommentJson, readRunResumeJson, readPresenceJson } from "./http.js";
-import { delay, enforceModelUsageTokenLimitsForBody, enforceModelUsageTokenLimits, hasRequestValue, hasExplicitAgent, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, compactMetadata, reportIssue, reportPullRequest, reportBrainIngest, writeJsonFileAtomic, seqAfter, filterEvents, boundedDiagnosticText, isSensitiveDiagnosticKey, replayEntryFromEvent, recordData, stringField, numberField, stringArrayField, readJson, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, optionalClientRequestId, isSafeDirectoryName, envNameValue, stringArray, allowedToolSubset, booleanFlag, positiveInt, badRequest, conflict, notFound, writeJson, isNotFound, isAlreadyExists, startedAt } from "./shared.js";
+import { HarnessServerOptions } from "./types.js";
+import { CancelRequestBody, delay, enforceModelUsageTokenLimitsForBody, enforceModelUsageTokenLimits, hasRequestValue, hasExplicitAgent, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, compactMetadata, reportIssue, reportPullRequest, reportBrainIngest, writeJsonFileAtomic, seqAfter, filterEvents, boundedDiagnosticText, isSensitiveDiagnosticKey, replayEntryFromEvent, recordData, stringField, numberField, stringArrayField, readJson, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, optionalClientRequestId, isSafeDirectoryName, envNameValue, stringArray, allowedToolSubset, booleanFlag, positiveInt, badRequest, conflict, notFound, writeJson, isNotFound, isAlreadyExists, startedAt, readJsonBody } from "./shared.js";
+
+async function streamEvents(res: ServerResponse, runDir: string, after: number, options: HarnessServerOptions): Promise<void> {
+  res.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+  res.flushHeaders();
+
+  let lastSeq = after;
+  const deadline = Date.now() + 60_000;
+
+  while (!res.destroyed && Date.now() < deadline) {
+    const allEvents = await readRunEventsIfPresent(runDir, options);
+    const events = filterEvents(allEvents, lastSeq);
+    for (const event of events) {
+      lastSeq = Math.max(lastSeq, event.seq);
+      res.write(`event: harness_event\n`);
+      res.write(`id: ${event.seq}\n`);
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+
+    const latestEvent = latestRunEvent(allEvents);
+    const state = await readRunStateIfPresent(runDir, options);
+    if (shouldCloseRunEventStream(state, latestEvent, lastSeq)) {
+      res.end();
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  res.end();
+}
+
+async function readCancelJson(req: IncomingMessage): Promise<CancelRequestBody> {
+  return readJsonBody<CancelRequestBody>(req);
+}
+
+async function readRunCommentJson(req: IncomingMessage): Promise<RunCommentRequestBody> {
+  return readJsonBody<RunCommentRequestBody>(req);
+}
+
+async function readRunResumeJson(req: IncomingMessage): Promise<RunResumeRequestBody> {
+  return readJsonBody<RunResumeRequestBody>(req);
+}
+
+async function readPresenceJson(req: IncomingMessage): Promise<PresenceRequestBody> {
+  return readJsonBody<PresenceRequestBody>(req);
+}
 
 
 interface RunRequestBody {
@@ -3259,4 +3308,4 @@ function runCreateIdempotencyStatus(): RunCreateIdempotencyStatus {
   };
 }
 
-export { RunRequestBody, RunPresetName, RunCommentRequestBody, RunResumeRequestBody, PresenceRequestBody, RunEventContext, LinkedIssueRun, InitialRunEvent, HarnessRunStart, QueuedRun, ActiveRun, ActiveRunSlot, RunCreateIdempotencyStatus, QueueRecoveryAudit, StaleRunCleanupAudit, RunReplay, RunEvidenceCheckpoint, RunReplayEntry, RunChangedFileHint, RunExternalEffectEvidence, RunPresenceEntry, StoredRunPresenceEntry, RunPresenceRegistry, RUN_PRESENCE_TTL_MS, RUN_PAUSE_REQUEST_FILE, RUN_CANCEL_REQUEST_FILE, RUN_CONTROL_POLL_INTERVAL_MS, DISTRIBUTED_RUN_QUEUE_POLL_MS, tenantActiveRunLimit, effectiveTenantActiveRunLimit, tenantRunCapacityScope, activeTenantRunCount, activeTenantRunIds, queuedTenantRunCount, activeRunCollaboratorSummary, queuedRunPositions, queuedRunConcurrencySummary, handleListRuns, handleCreateRun, createAsyncRunFromBody, drainQueuedRuns, recoverQueuedRuns, cleanupStaleRunningRuns, isSafePersistedRunState, listPersistedRunDirs, handleAbandonRun, handleCancelRun, handleResumeRun, resumePausedRun, handleCreateRunComment, handleUpdateRunPresence, handleListRunPresence, handleReadRun, readRunStatesForListing, readRunState, writeRunPauseRequest, findBlockingPersistedRunningRun, runEventContext, runRequester, publicRunRequester, runUrl, runDashboardUrl, runEvidenceUrl, recordRunExternalEffect, markRunError, recordRunError, writeRunSummary, writeRunStatus, runEvidenceCheckpoint, runReplayFromEvents, publicRunErrorSummary, isRunSummaryState, runExternalEffectEvidence, latestRunExternalEffect, runEvidencePath, runRequesterSummaryField, runChangedFileHintsField, shouldCloseRunEventStream, latestRunEvent, readRunEventsIfPresent, readRunStateIfPresent, readRunStateForScan, createAgent, runAgentMetadata, runPresetName, presenceClientId, linkedIssueRuns, presenceLabel, presenceFocus, activeRunKey, persistPresenceEntry, refreshRunPresenceFromDisk, refreshPresenceDirectory, purgeExpiredRunPresence, runPresenceEntries, publicRunPresenceEntry, runCreateIdempotencyStatus };
+export { RunRequestBody, RunPresetName, RunCommentRequestBody, RunResumeRequestBody, PresenceRequestBody, RunEventContext, LinkedIssueRun, InitialRunEvent, HarnessRunStart, QueuedRun, ActiveRun, ActiveRunSlot, RunCreateIdempotencyStatus, QueueRecoveryAudit, StaleRunCleanupAudit, RunReplay, RunEvidenceCheckpoint, RunReplayEntry, RunChangedFileHint, RunExternalEffectEvidence, RunPresenceEntry, StoredRunPresenceEntry, RunPresenceRegistry, RUN_PRESENCE_TTL_MS, RUN_PAUSE_REQUEST_FILE, RUN_CANCEL_REQUEST_FILE, RUN_CONTROL_POLL_INTERVAL_MS, DISTRIBUTED_RUN_QUEUE_POLL_MS, tenantActiveRunLimit, effectiveTenantActiveRunLimit, tenantRunCapacityScope, activeTenantRunCount, activeTenantRunIds, queuedTenantRunCount, activeRunCollaboratorSummary, queuedRunPositions, queuedRunConcurrencySummary, handleListRuns, handleCreateRun, createAsyncRunFromBody, drainQueuedRuns, recoverQueuedRuns, cleanupStaleRunningRuns, isSafePersistedRunState, listPersistedRunDirs, handleAbandonRun, handleCancelRun, handleResumeRun, resumePausedRun, handleCreateRunComment, handleUpdateRunPresence, handleListRunPresence, handleReadRun, readRunStatesForListing, readRunState, writeRunPauseRequest, findBlockingPersistedRunningRun, runEventContext, runRequester, publicRunRequester, runUrl, runDashboardUrl, runEvidenceUrl, recordRunExternalEffect, markRunError, recordRunError, writeRunSummary, writeRunStatus, runEvidenceCheckpoint, runReplayFromEvents, publicRunErrorSummary, isRunSummaryState, runExternalEffectEvidence, latestRunExternalEffect, runEvidencePath, runRequesterSummaryField, runChangedFileHintsField, shouldCloseRunEventStream, latestRunEvent, readRunEventsIfPresent, readRunStateIfPresent, readRunStateForScan, createAgent, runAgentMetadata, runPresetName, presenceClientId, linkedIssueRuns, presenceLabel, presenceFocus, activeRunKey, persistPresenceEntry, refreshRunPresenceFromDisk, refreshPresenceDirectory, purgeExpiredRunPresence, runPresenceEntries, publicRunPresenceEntry, runCreateIdempotencyStatus, readPresenceJson };

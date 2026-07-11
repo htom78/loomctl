@@ -17,8 +17,24 @@ import { controlPlaneProviderName } from "./status.js";
 import { VasCaseReviewDecision, VasCaseClaimAction, RunReviewVasEvidence, VAS_LITE_REVIEW_PRESET, reviewVasLiteCase, claimVasLiteCase, readVasLiteCase, vasLiteRunCaseId, vasLiteCaseClaimAction, vasLiteCaseReviewDecisionField, runReviewVasEvidence, linkedIssueVasCases, linkedVasCaseIdsByProject } from "./vas.js";
 import { ProjectContractRequestBody, ProjectSummary, projectContractFromBody, runProjectQuery, projectContractEvidenceField, projectContractPatchField, projectContractStatusEvidenceField } from "./projects.js";
 import { TenantAccess, effectiveTenantAllowedTools, requireTenantTool, brainSignalFailureKind, runTenantAuditTrail, tenantRoleField, readTenantPolicy, requireTenantAccess, tenantRoleRank } from "./tenants.js";
-import { HarnessServerOptions, PullRequestReporterResult, WorkspacePullRequestRequest, IssueCommentReaderContext, readReviewJson, readReviewClaimJson, readDeploymentJson, readIssueCommentSyncJson, readRawBody } from "./http.js";
-import { compactObject, latestAuditData, replayText, recordData, stringField, booleanField, numberField, headerValue, readJson, requireSafeName, optionalSafeName, optionalString, optionalClientId, timingSafeHexEqual, booleanFlag, badRequest, unauthorized, notFound, writeJson, isNotFound, startedAt } from "./shared.js";
+import { HarnessServerOptions, PullRequestReporterResult, WorkspacePullRequestRequest, IssueCommentReaderContext } from "./types.js";
+import { compactObject, latestAuditData, replayText, recordData, stringField, booleanField, numberField, headerValue, readJson, requireSafeName, optionalSafeName, optionalString, optionalClientId, timingSafeHexEqual, booleanFlag, badRequest, unauthorized, notFound, writeJson, isNotFound, startedAt, readJsonBody, readRawBody } from "./shared.js";
+
+async function readReviewJson(req: IncomingMessage): Promise<ReviewRequestBody> {
+  return readJsonBody<ReviewRequestBody>(req);
+}
+
+async function readReviewClaimJson(req: IncomingMessage): Promise<ReviewClaimRequestBody> {
+  return readJsonBody<ReviewClaimRequestBody>(req);
+}
+
+async function readDeploymentJson(req: IncomingMessage): Promise<DeploymentRequestBody> {
+  return readJsonBody<DeploymentRequestBody>(req);
+}
+
+async function readIssueCommentSyncJson(req: IncomingMessage): Promise<IssueCommentSyncRequestBody> {
+  return readJsonBody<IssueCommentSyncRequestBody>(req);
+}
 
 
 interface HandoffFollowupRunRequestBody {

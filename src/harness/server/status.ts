@@ -14,7 +14,7 @@ import { QueuedRun, ActiveRunSlot, RunCreateIdempotencyStatus, QueueRecoveryAudi
 import { RunWorkspaceIsolation, ActiveWorkspaceSession, WorkspaceSessionSummary, WORKSPACE_FILE_READ_LIMIT_BYTES, WORKSPACE_FILE_WRITE_LIMIT_BYTES, WORKSPACE_OUTPUT_LIMIT_BYTES, WORKSPACE_SESSION_INPUT_LIMIT_BYTES, DEFAULT_MAX_WORKSPACE_SESSIONS, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, workspaceCommandTimeoutMs, workspaceSessionIdleTimeoutMs, activeWorkspaceSessionDetails, statusActiveWorkspaceSessionDetails, listWorkspaceTenantNames, activeRunWorkspaceKey, activeRunWorkspaceLeaseKey, runWorkspaceIsolation } from "./workspace.js";
 import { agentGitServiceProjectAgentsReadiness, readProjectSummary, listTenantProjectNames } from "./projects.js";
 import { TenantControlPlaneIdentity, TenantPolicy, TenantPolicyChange, TenantHarnessServerStatus, effectiveTenantAllowedTools, readTenantPolicySync, readTenantPolicy, writeTenantPolicy, tenantPolicyFromUnknown, tenantPolicyReplacementChange, isSafeTenantDirectoryName } from "./tenants.js";
-import { HarnessServerOptions, ControlPlaneProviderName, ControlPlaneAgentIdentityMode, HTTP_JSON_BODY_LIMIT_BYTES } from "./http.js";
+import { HarnessServerOptions, ControlPlaneProviderName, ControlPlaneAgentIdentityMode, HTTP_JSON_BODY_LIMIT_BYTES } from "./types.js";
 import { compactObject, policyStatusAccessKeys, isNotFound, startedAt } from "./shared.js";
 
 

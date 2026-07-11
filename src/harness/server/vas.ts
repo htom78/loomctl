@@ -14,8 +14,24 @@ import { IssueCommentSeedEvidence, issueCommentSeedEvidence, reviewDecision } fr
 import { controlPlaneProviderName, controlPlaneIssueUrl, publicUrl } from "./status.js";
 import { ProjectSummary, AGENT_GIT_SERVICE_VAS_LEARNINGS_PAGE, requireProjectMetadata, ProjectSourceDefaultValues, readProjectSourceDefaults, listTenantProjectNames } from "./projects.js";
 import { TenantAccess, brainSignalFailureKind, tenantRoleField, requireTenantAccess } from "./tenants.js";
-import { HarnessServerOptions, readVasCaseCreateJson, readVasCaseReviewJson, readVasCaseClaimJson, readVasCaseReviewRunJson } from "./http.js";
-import { hasRequestValue, textArray, recordArray, readOptionalJsonObject, readOptionalTextFile, arrayCount, oneLineText, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, writeJsonFileAtomic, recordData, stringField, requireSafeName, optionalSafeName, optionalString, optionalClientId, isSafeDirectoryName, nonNegativeNumberValue, badRequest, conflict, writeJson, isNotFound, startedAt } from "./shared.js";
+import { HarnessServerOptions } from "./types.js";
+import { hasRequestValue, textArray, recordArray, readOptionalJsonObject, readOptionalTextFile, arrayCount, oneLineText, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, writeJsonFileAtomic, recordData, stringField, requireSafeName, optionalSafeName, optionalString, optionalClientId, isSafeDirectoryName, nonNegativeNumberValue, badRequest, conflict, writeJson, isNotFound, startedAt, readJsonBody } from "./shared.js";
+
+async function readVasCaseCreateJson(req: IncomingMessage): Promise<VasCaseCreateRequestBody> {
+  return readJsonBody<VasCaseCreateRequestBody>(req);
+}
+
+async function readVasCaseReviewJson(req: IncomingMessage): Promise<VasCaseReviewRequestBody> {
+  return readJsonBody<VasCaseReviewRequestBody>(req);
+}
+
+async function readVasCaseClaimJson(req: IncomingMessage): Promise<VasCaseClaimRequestBody> {
+  return readJsonBody<VasCaseClaimRequestBody>(req);
+}
+
+async function readVasCaseReviewRunJson(req: IncomingMessage): Promise<VasCaseReviewRunRequestBody> {
+  return readJsonBody<VasCaseReviewRunRequestBody>(req);
+}
 
 
 interface VasLiteReviewPresetInput {

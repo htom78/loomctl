@@ -17,8 +17,32 @@ import { QueuedRun, ActiveRunSlot, RunCreateIdempotencyStatus, RunPresenceRegist
 import { RunWorkspaceIsolation, ActiveWorkspaceSession, WorkspaceSessionSummary, activeWorkspaceSessionDetails, runWorkspaceIsolation } from "./workspace.js";
 import { HarnessControlPlaneStatus, SanitizedTenantControlPlaneIdentity, ActiveRunResourceStatus, HarnessVisionLock, HarnessServerStatus, HarnessProfileReadiness, HarnessStateBackendStatus, HarnessIdentityStatus, QueuedRunResourceStatus, OrphanedRunningRunResourceStatus, harnessTenantServerStatus, harnessControlPlaneStatus, controlPlaneProviderName, tenantControlPlaneIdentityKey } from "./status.js";
 import { ProjectSummary, agentGitServiceProjectAgentsReadinessForProvider, readTenantProjectSummariesWithActivity, readProjectSummary, requireProjectName, listTenantProjectNames } from "./projects.js";
-import { HarnessServerOptions, ControlPlaneProviderName, readBrainSignalJson, readTenantPolicyJson, readTenantPolicySettingsJson, readTenantPolicyEscalationJson, readTenantPolicyEscalationDecisionJson, readTenantControlPlaneBackupManifestJson } from "./http.js";
-import { compactObject, seqAfter, recordData, stringField, numberField, stringArrayField, stringArrayFieldAllowEmpty, arraysEqual, streamQueryToken, safeEqualString, bearerToken, headerValue, requireSafeName, requireString, optionalString, optionalClientId, envNameValue, optionalEnvNameValue, templateParameterValue, stringArray, positiveIntValue, positiveNumberValue, dockerMemoryValue, dockerNetworkValue, badRequest, unauthorized, forbidden, notFound, writeJson, isNotFound, startedAt } from "./shared.js";
+import { HarnessServerOptions, ControlPlaneProviderName, TenantExecutorLimits } from "./types.js";
+import { compactObject, seqAfter, recordData, stringField, numberField, stringArrayField, stringArrayFieldAllowEmpty, arraysEqual, streamQueryToken, safeEqualString, bearerToken, headerValue, requireSafeName, requireString, optionalString, optionalClientId, envNameValue, optionalEnvNameValue, templateParameterValue, stringArray, positiveIntValue, positiveNumberValue, dockerMemoryValue, dockerNetworkValue, badRequest, unauthorized, forbidden, notFound, writeJson, isNotFound, startedAt, readJsonBody } from "./shared.js";
+
+async function readBrainSignalJson(req: IncomingMessage): Promise<BrainSignalRequestBody> {
+  return readJsonBody<BrainSignalRequestBody>(req);
+}
+
+async function readTenantPolicyJson(req: IncomingMessage): Promise<TenantPolicyRequestBody> {
+  return readJsonBody<TenantPolicyRequestBody>(req);
+}
+
+async function readTenantPolicySettingsJson(req: IncomingMessage): Promise<TenantPolicySettingsRequestBody> {
+  return readJsonBody<TenantPolicySettingsRequestBody>(req);
+}
+
+async function readTenantPolicyEscalationJson(req: IncomingMessage): Promise<TenantPolicyEscalationRequestBody> {
+  return readJsonBody<TenantPolicyEscalationRequestBody>(req);
+}
+
+async function readTenantPolicyEscalationDecisionJson(req: IncomingMessage): Promise<TenantPolicyEscalationDecisionRequestBody> {
+  return readJsonBody<TenantPolicyEscalationDecisionRequestBody>(req);
+}
+
+async function readTenantControlPlaneBackupManifestJson(req: IncomingMessage): Promise<unknown> {
+  return readJsonBody<unknown>(req);
+}
 
 
 export interface TenantControlPlaneIdentity {
@@ -55,13 +79,6 @@ export interface TenantPolicyLimits {
   modelRequesterCostUsdWarning?: number;
   modelProjectCostUsdLimit?: number;
   modelRequesterCostUsdLimit?: number;
-}
-
-export interface TenantExecutorLimits {
-  cpus?: number;
-  memory?: string;
-  pidsLimit?: number;
-  network?: string;
 }
 
 interface TenantPolicyRequestBody {
@@ -1954,4 +1971,5 @@ function optionalBrainSignalNonNegativeNumber(value: unknown, field: string): nu
   return parsed;
 }
 
+export type { TenantExecutorLimits } from "./types.js";
 export { TenantPolicyRequestBody, TenantPolicySettingsRequestBody, TenantPolicyEscalationRequestBody, TenantPolicyEscalationDecisionRequestBody, TenantPolicyChange, BrainSignalRequestBody, TenantAccess, TenantHarnessServerStatus, effectiveTenantExecutorLimits, effectiveTenantExecutorTemplateParameters, effectiveTenantAllowedTools, requireTenantTool, readTenantPolicySync, handleListTenantPolicyEscalations, handleCreateTenantPolicyEscalation, handleCreateBrainSignal, handleReadTenantBrainSignals, handleDecideTenantPolicyEscalation, handleReadTenantPolicy, handleReadTenantAccess, handleReadTenantStatus, handleReadTenantControlPlaneBackup, handleReadTenantControlPlaneCutoverReadiness, handleTenantControlPlaneRestoreDryRun, handleUpdateTenantPolicy, handleUpdateTenantPolicySettings, handleReadTenantAudit, handleListTenantModelUsageWarnings, brainSignalAuditData, brainSignalFailureKind, runTenantAuditTrail, tenantRoleField, readTenantPolicy, writeTenantPolicy, tenantPolicyFromUnknown, tenantPolicyControlPlaneIdentityActor, tenantPolicyApiKeyActor, tenantPolicyRole, sanitizeTenantControlPlaneIdentity, tenantPolicyAuditData, tenantPolicyReplacementChange, requireTenantAccess, isSafeTenantDirectoryName, requireTenantRole, isTenantRole, tenantRoleRank };

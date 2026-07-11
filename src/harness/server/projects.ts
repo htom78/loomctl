@@ -8,14 +8,42 @@ import type { ProjectContractEvidence, ProjectContractPatch, ProjectContractStat
 import { type ControlPlaneProviderCatalogName } from "../control-plane.js";
 import { AGENT_GIT_SERVICE_PROJECT_PROVISIONING_RECEIPT_PATH, provisionAgentGitServiceProjectAgent, readAgentGitServiceProjectProvisioningReceipt, type AgentGitServiceProjectProvisioningResult, type ProvisionAgentGitServiceProjectAgentOptions } from "../agent-git-service-provisioning.js";
 import { projectMetadataDefaultSkills, projectTemplateContractStatus, readProjectTemplateMetadata, seedProjectTemplate, updateProjectTemplateContract, updateProjectTemplateDefaultSkills, updateProjectTemplateRunPolicy, type ProjectTemplateContract, type ProjectTemplateContractStatus, type ProjectTemplateMetadata, type ProjectTemplateName, type ProjectTemplateRunPolicy } from "../project-templates.js";
-import { RunRequestBody, QueuedRun, ActiveRunSlot, RunPresenceEntry, StoredRunPresenceEntry, RunPresenceRegistry, RUN_PRESENCE_TTL_MS, activeRunCollaboratorSummary, queuedRunPositions, readRunStatesForListing, isRunSummaryState, createAgent, runPresetName, presenceClientId, presenceLabel, presenceFocus, persistPresenceEntry, refreshRunPresenceFromDisk, refreshPresenceDirectory, purgeExpiredRunPresence, publicRunPresenceEntry } from "./runs.js";
+import { RunRequestBody, QueuedRun, ActiveRunSlot, RunPresenceEntry, StoredRunPresenceEntry, RunPresenceRegistry, RUN_PRESENCE_TTL_MS, activeRunCollaboratorSummary, queuedRunPositions, readRunStatesForListing, isRunSummaryState, createAgent, runPresetName, presenceClientId, presenceLabel, presenceFocus, persistPresenceEntry, refreshRunPresenceFromDisk, refreshPresenceDirectory, purgeExpiredRunPresence, publicRunPresenceEntry, readPresenceJson } from "./runs.js";
 import { HarnessWorkspaceContext, ActiveWorkspaceSession, WorkspaceSessionSummary, WorkspaceCommandSummary, workspaceDirectoryUsageBytes, activeWorkspaceSessionDetails, readWorkspaceCommandSummaries, readWorkspaceSessionSummaries, workspaceDiff, workspaceInfo, workspaceSessionActivityAt, compactWorkspaceSessionSummary, listWorkspaceTenantNames } from "./workspace.js";
 import { ProjectHumanGateRunSummary, projectHumanGateRunSummary, reviewClaimField } from "./gates.js";
 import { ActiveRunResourceStatus, HarnessProfileReadiness, QueuedRunResourceStatus, activeRunResourceStatuses, statusActiveRunDetails, queuedRunResourceStatus, controlPlaneProviderName, publicControlPlaneBaseUrl, upsertTenantControlPlaneIdentity, controlPlaneProviderNameField } from "./status.js";
 import { VAS_LITE_REVIEW_PRESET, vasLiteReviewPresetInput, readVasLiteProjectReadiness } from "./vas.js";
 import { TenantControlPlaneIdentity, TenantPolicyLimits, TenantAccess, requireTenantTool, readTenantPolicy, tenantPolicyControlPlaneIdentityActor, tenantPolicyApiKeyActor, tenantPolicyRole, sanitizeTenantControlPlaneIdentity, tenantPolicyAuditData, requireTenantAccess } from "./tenants.js";
-import { HarnessServerOptions, readProjectCreateJson, readProjectSourceDefaultsJson, readProjectDefaultSkillsJson, readProjectRunPolicyJson, readProjectContractJson, readPresenceJson, readAgentGitServiceProjectProvisionJson, readAgentGitServiceProvisioningPlanApplyJson } from "./http.js";
-import { compactStringList, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, writeJsonFileAtomic, recordData, stringField, booleanField, numberField, stringArrayField, stringArrayFieldAllowEmpty, requireSafeName, optionalSafeName, requireString, optionalString, optionalBoolean, optionalClientId, envNameValue, stringArray, booleanFlag, badRequest, conflict, notFound, writeJson, isNotFound, isAlreadyExists, startedAt } from "./shared.js";
+import { HarnessServerOptions } from "./types.js";
+import { compactStringList, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, writeJsonFileAtomic, recordData, stringField, booleanField, numberField, stringArrayField, stringArrayFieldAllowEmpty, requireSafeName, optionalSafeName, requireString, optionalString, optionalBoolean, optionalClientId, envNameValue, stringArray, booleanFlag, badRequest, conflict, notFound, writeJson, isNotFound, isAlreadyExists, startedAt, readJsonBody } from "./shared.js";
+
+async function readProjectCreateJson(req: IncomingMessage): Promise<ProjectCreateRequestBody> {
+  return readJsonBody<ProjectCreateRequestBody>(req);
+}
+
+async function readProjectSourceDefaultsJson(req: IncomingMessage): Promise<ProjectSourceDefaultsRequestBody> {
+  return readJsonBody<ProjectSourceDefaultsRequestBody>(req);
+}
+
+async function readProjectDefaultSkillsJson(req: IncomingMessage): Promise<ProjectDefaultSkillsRequestBody> {
+  return readJsonBody<ProjectDefaultSkillsRequestBody>(req);
+}
+
+async function readProjectRunPolicyJson(req: IncomingMessage): Promise<ProjectRunPolicyRequestBody> {
+  return readJsonBody<ProjectRunPolicyRequestBody>(req);
+}
+
+async function readProjectContractJson(req: IncomingMessage): Promise<ProjectContractRequestBody> {
+  return readJsonBody<ProjectContractRequestBody>(req);
+}
+
+async function readAgentGitServiceProjectProvisionJson(req: IncomingMessage): Promise<AgentGitServiceProjectProvisionRequestBody> {
+  return readJsonBody<AgentGitServiceProjectProvisionRequestBody>(req);
+}
+
+async function readAgentGitServiceProvisioningPlanApplyJson(req: IncomingMessage): Promise<AgentGitServiceProvisioningPlanApplyRequestBody> {
+  return readJsonBody<AgentGitServiceProvisioningPlanApplyRequestBody>(req);
+}
 
 
 interface AgentGitServiceProjectProvisionRequestBody {
