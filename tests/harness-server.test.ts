@@ -515,6 +515,65 @@ test("HTTP harness run events ignore unreadable and mismatched persisted event l
   );
 });
 
+test("HTTP harness run replay redacts sensitive diagnostic keys and drops nested objects", async () => {
+  const workspaceRoot = await tempDir("loom-http-replay-redact");
+
+  await withServer(
+    workspaceRoot,
+    async (baseUrl) => {
+      const create = await fetch(`${baseUrl}/runs`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer dev-key" },
+        body: JSON.stringify({
+          tenant: "alice",
+          project: "proj-a",
+          goal: "diagnostic redaction",
+          script: [{ message: "finish", finish: true }],
+          verify: [],
+        }),
+      });
+      assert.equal(create.status, 201);
+      const summary = await create.json();
+
+      const eventsPath = join(workspaceRoot, "alice", "proj-a", ".loom", "runs", summary.runId, "events.jsonl");
+      const lines = (await readFile(eventsPath, "utf8")).trimEnd().split("\n");
+      const events = lines.map((line) => JSON.parse(line));
+      const maxSeq = Math.max(...events.map((event) => event.seq));
+      const injected = JSON.stringify({
+        ...events[0],
+        seq: maxSeq + 1,
+        type: "error",
+        data: {
+          kind: "model_error",
+          details: {
+            token: "SECRET_TOP_LEVEL",
+            meta: { token: "SECRET_NESTED" },
+            safe: "visible",
+          },
+        },
+      });
+      await writeFile(eventsPath, [...lines, injected, ""].join("\n"), "utf8");
+
+      const replayResponse = await fetch(`${baseUrl}/tenants/alice/runs/${summary.runId}/replay?project=proj-a`, {
+        headers: { authorization: "Bearer dev-key" },
+      });
+      const replayText = await replayResponse.text();
+      assert.equal(replayResponse.status, 200, replayText);
+      // Sensitive top-level key is filtered by name.
+      assert.equal(replayText.includes("SECRET_TOP_LEVEL"), false, "value under a sensitive key name must be redacted");
+      // Nested object under a non-sensitive key is dropped, not JSON.stringified.
+      assert.equal(replayText.includes("SECRET_NESTED"), false, "nested object must be dropped, not stringified");
+      // Non-sensitive primitive diagnostics still render.
+      assert.ok(replayText.includes("safe=visible"), "safe primitive diagnostics should still render");
+    },
+    {
+      tenantApiKeys: {
+        alice: [{ token: "dev-key", actor: "dev-user", role: "developer" }],
+      },
+    },
+  );
+});
+
 test("HTTP harness records run comments in events, replay, and tenant audit", async () => {
   const workspaceRoot = await tempDir("loom-http-run-comments");
 

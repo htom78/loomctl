@@ -249,8 +249,13 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
     const header = req.headers["x-forwarded-for"];
     const raw = Array.isArray(header) ? header.join(",") : header;
     const hops = (raw ?? "").split(",").map((hop) => hop.trim()).filter(Boolean);
-    // Drop the trusted proxy hops from the right; the next hop is the untrusted client.
-    const index = hops.length - rateLimitTrustedProxyHops - 1;
+    // Each trusted proxy appends exactly one entry on the right; the outermost
+    // trusted proxy appended the real client's address. With N trusted hops that
+    // entry is at index (len - N). Anything further left is client-supplied and
+    // spoofable, so it is never used. If there are fewer entries than trusted
+    // hops (misconfig or a client that skipped a proxy), fall back to the socket
+    // peer rather than trusting a spoofable entry.
+    const index = hops.length - rateLimitTrustedProxyHops;
     return index >= 0 && hops[index] ? hops[index] : socketAddress;
   };
   const takeRateLimitToken = (clientKey: string): boolean => {
@@ -334,7 +339,7 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
       }
 
       if (req.method === "GET" && url.pathname === "/metrics") {
-        await requireServerStatusAccess(req, workspaceRoot, serverOptions, url);
+        await requireServerStatusAccess(req, serverOptions, url);
         writeText(res, 200, await serverMetrics(
           workspaceRoot,
           serverOptions,
@@ -351,7 +356,7 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
       }
 
       if (req.method === "GET" && url.pathname === "/status") {
-        await requireServerStatusAccess(req, workspaceRoot, serverOptions, url);
+        await requireServerStatusAccess(req, serverOptions, url);
         writeJson(res, 200, await harnessServerStatus(workspaceRoot, serverOptions, startedAt, allowedTools, activeRunSlots, activeWorkspaces, queuedRuns, activeSessions, queueRecovery, staleRunCleanup, await stateBackendHealth?.ensureFresh(), await oidcAuthenticator?.ensureReady()));
         return;
       }

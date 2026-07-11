@@ -435,14 +435,21 @@ function replayDiagnosticDetails(value: unknown): string | undefined {
   // cannot leak through the diagnostic path.
   const pairs = Object.entries(details)
     .filter(([key]) => !isSensitiveDiagnosticKey(key))
-    .map(([key, entry]) => `${key}=${boundedDiagnosticText(replayDiagnosticValue(entry), 200)}`);
+    .map(([key, entry]) => {
+      const rendered = replayDiagnosticValue(entry);
+      return rendered === undefined ? undefined : `${key}=${boundedDiagnosticText(rendered, 200)}`;
+    })
+    .filter((pair): pair is string => pair !== undefined);
   return pairs.length ? replayText(pairs.join(" ")) : undefined;
 }
 
-function replayDiagnosticValue(value: unknown): string {
+function replayDiagnosticValue(value: unknown): string | undefined {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value) ?? String(value);
+  // Drop nested objects/arrays rather than JSON.stringify them: a nested
+  // { token: ... } sitting under a non-sensitive top-level key would otherwise
+  // leak here. Mirrors publicRunErrorDetailValue in the run-summary path.
+  return undefined;
 }
 
 function recordData(value: unknown): Record<string, unknown> {
@@ -484,7 +491,6 @@ function arraysEqual(left: string[], right: string[]): boolean {
 
 async function requireServerStatusAccess(
   req: IncomingMessage,
-  workspaceRoot: string,
   options: HarnessServerOptions,
   url?: URL,
 ): Promise<TenantAccess | undefined> {

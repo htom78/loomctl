@@ -123,24 +123,33 @@ test("rate limiting keys by X-Forwarded-For client hop only when trusted proxy h
   const baseUrl = `http://127.0.0.1:${address.port}`;
 
   try {
-    // Two distinct clients arrive through one trusted proxy. XFF = "<client>, <proxy>".
-    // Keyed on the client hop (index = len - hops - 1 = 0), each gets its own bucket,
-    // so client B is not throttled by client A exhausting its burst.
-    const drainA = async () => {
+    // With one trusted proxy, the proxy appends the real client IP as the
+    // RIGHTMOST X-Forwarded-For entry. The key is hops[len - trustedHops], i.e.
+    // that rightmost entry, so two clients get separate buckets.
+    const drain = async (xff: string) => {
       const statuses: number[] = [];
       for (let i = 0; i < 4; i += 1) {
-        const r = await fetch(`${baseUrl}/status`, { headers: { "x-forwarded-for": "10.0.0.1, 127.0.0.1" } });
+        const r = await fetch(`${baseUrl}/status`, { headers: { "x-forwarded-for": xff } });
         statuses.push(r.status);
         await r.arrayBuffer();
       }
       return statuses;
     };
-    const aStatuses = await drainA();
-    assert.equal(aStatuses.includes(429), true, "client A should be throttled after its own burst");
 
-    const b = await fetch(`${baseUrl}/status`, { headers: { "x-forwarded-for": "10.0.0.2, 127.0.0.1" } });
+    // Client A (proxy-appended real IP 10.0.0.1) drains its burst -> throttled.
+    assert.equal((await drain("10.0.0.1")).includes(429), true, "client A should be throttled after its own burst");
+
+    // Client B (different real IP) has its own bucket -> not throttled.
+    const b = await fetch(`${baseUrl}/status`, { headers: { "x-forwarded-for": "10.0.0.2" } });
     assert.notEqual(b.status, 429);
     await b.arrayBuffer();
+
+    // A spoofed left segment with the SAME proxy-appended real IP keys to A's
+    // already-drained bucket, not a fresh one -> throttled. This proves the
+    // client-controlled left of XFF cannot be used to mint new buckets.
+    const spoof = await fetch(`${baseUrl}/status`, { headers: { "x-forwarded-for": "203.0.113.9, 10.0.0.1" } });
+    assert.equal(spoof.status, 429, "spoofed left segment must not bypass the limiter");
+    await spoof.arrayBuffer();
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
