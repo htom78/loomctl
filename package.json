@@ -15,6 +15,7 @@
     "staging:up": "docker compose -f deploy/staging/compose.yml up -d --build",
     "staging:smoke": "node scripts/staging-two-instance.mjs",
     "staging:down": "docker compose -f deploy/staging/compose.yml down",
+    "production:check": "npm run build && node scripts/production-check.mjs",
     "start": "node dist/index.js"
   },
   "dependencies": {

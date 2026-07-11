@@ -13,10 +13,10 @@ cutover-bundle/
 .env
 .env.*
 !.env.example
+production-check.json
 
 # Local credentials and executor state.
 .secrets/
 secrets/
 *.pem
 *.key
-

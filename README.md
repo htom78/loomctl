@@ -120,6 +120,13 @@ Before starting a shared service, run `loom harness doctor` with the same
 executor safety without starting the server or contacting external systems.
 Then follow [`docs/operator-runbook.md`](docs/operator-runbook.md).
 
+For the production-shaped gate, copy `deploy/production/.env.example` into
+your secret/configuration system and run `npm run production:check`. It builds
+the CLI, validates the required Coder, PostgreSQL, Redis, model gateway,
+control-plane, OIDC, and operator-key inputs, then invokes the existing
+`platform-readiness` doctor. The JSON report is token-free; set
+`LOOM_PRODUCTION_CHECK_REPORT=reports/production-check.json` to persist it.
+
 ## Brain
 
 ```bash
