@@ -73,8 +73,14 @@ test("encrypted platform backup restores PostgreSQL, Redis, and workspaces into 
     assert.equal(backup.manifest.source.postgres.eventCount, 1);
     assert.ok(backup.manifest.source.redis.keyCount >= 4);
     assert.ok(backup.manifest.source.workspace.entryCount >= 4);
-    assert.equal(JSON.stringify(backup.manifest).includes("loom_test"), true);
-    assert.equal(JSON.stringify(backup.manifest).includes("loom_test@"), false);
+    // The manifest keeps the non-secret source database name (derived from the
+    // actual test URL, not a hardcoded one) but never the connection credentials.
+    const sourceUrl = new URL(postgresUrl!);
+    const sourceDatabaseName = sourceUrl.pathname.replace(/^\//, "");
+    assert.equal(backup.manifest.source.postgres.database, sourceDatabaseName);
+    if (sourceUrl.username) {
+      assert.equal(JSON.stringify(backup.manifest).includes(`${sourceUrl.username}:${sourceUrl.password}@`), false);
+    }
     await assert.rejects(() => access(join(backupDir, "postgres.dump")));
     await assert.rejects(() => access(join(backupDir, "redis.ndjson")));
     await assert.rejects(() => access(join(backupDir, "workspaces.tar")));
