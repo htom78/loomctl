@@ -20716,7 +20716,17 @@ test("HTTP harness persists run workspace session events after restart", async (
       assert.equal(input.status, 200);
 
       const eventsUrl = `${baseUrl}/tenants/alice/runs/${runId}/sessions/${sessionId}/events?project=proj-a`;
-      await pollJson(eventsUrl, (body) => body.some((event) => event.type === "exit" && event.exitCode === 0));
+      // Wait until the full transcript the restart phase asserts is observable —
+      // both the stdout line and the exit event — before closing the server, so
+      // the persisted session is complete and not racing the exit event alone.
+      await pollJson(
+        eventsUrl,
+        (body) =>
+          body.some((event) => event.type === "stdout" && event.data === "run-session-persisted\n") &&
+          body.some((event) => event.type === "exit" && event.exitCode === 0),
+        undefined,
+        15_000,
+      );
     },
     { allowedTools: ["file.read", "file.write", "shell.exec", "git.diff", "verify.run"] },
   );

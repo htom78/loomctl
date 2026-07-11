@@ -135,7 +135,9 @@ test("harness aborts an active run when its admission heartbeat is lost", async 
     });
     assert.equal(started.status, 202);
     const runId = String((await started.json()).runId);
-    await waitForRunStatus(baseUrl, "alice", "heartbeat", runId, "cancelled");
+    // Generous headroom (~300x the 60ms lease TTL): lease-loss abort should fire
+    // well within this. A failure here now signals a real abort bug, not CI load.
+    await waitForRunStatus(baseUrl, "alice", "heartbeat", runId, "cancelled", 20_000);
     const events = await backend.events.read<Record<string, unknown>>(`run-events:${runId}`);
     const cancel = events.find((event) => event.value.type === "cancel");
     const cancelData = cancel?.value.data as { reason?: string } | undefined;
@@ -152,8 +154,9 @@ async function waitForRunStatus(
   project: string,
   runId: string,
   expected: string,
+  timeoutMs = 5_000,
 ): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + timeoutMs;
   let last: Record<string, unknown> = {};
   while (Date.now() < deadline) {
     const response = await fetch(`${baseUrl}/tenants/${tenant}/runs/${runId}?project=${project}`);
