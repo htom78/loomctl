@@ -97,3 +97,17 @@ Content-Type: application/json
 Every create, rotation, and revoke is tenant-audited without plaintext key
 material. Keep at least one separately managed admin credential for break-glass
 access, and test it before rotating the last normal admin key.
+
+## Control-plane webhook secret
+
+The issue-comment webhook signature (`x-hub-signature-256`) is verified with a
+single server-wide secret (`--control-plane-webhook-secret-env`). This is safe
+when every tenant's control plane is the same operator-run Gitea/Forgejo (or
+AGS) instance you configured — the expected deployment.
+
+Do **not** reuse one harness secret across tenants that each run their own,
+independently administered Git service. Anyone who can read the webhook secret
+in their own service could then forge signature-valid `issue_comment` events for
+another tenant's runs. If tenants bring their own control planes, give each a
+distinct harness deployment (and secret), or gate webhook ingestion behind a
+per-tenant trust boundary.

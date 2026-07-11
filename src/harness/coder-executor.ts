@@ -288,16 +288,26 @@ function ensureOk(result: CommandResult): void {
   throw new Error(result.stderr || result.stdout || `remote command failed with exit code ${result.exitCode}`);
 }
 
+// Restrict git to network/ssh transports so a repo URL cannot invoke the
+// ext::/fd:: transport helpers (arbitrary command execution) or file:
+// (out-of-workspace reads). Exported once so every git child in the command
+// body inherits it, in both the credentialed and public-clone paths.
+const GIT_PROTOCOL_ALLOWLIST = "https:http:ssh:git";
+
+function withGitProtocolGuard(body: string): string {
+  return `export GIT_ALLOW_PROTOCOL=${GIT_PROTOCOL_ALLOWLIST}; ${body}`;
+}
+
 function syncCommand(remoteCwd: string, repo: string): string {
-  return `if [ -d ${shellQuote(posix.join(remoteCwd, ".git"))} ]; then cd ${shellQuote(remoteCwd)} && git fetch --all --prune; else rm -rf ${shellQuote(remoteCwd)} && git clone ${shellQuote(repo)} ${shellQuote(remoteCwd)}; fi`;
+  return withGitProtocolGuard(`if [ -d ${shellQuote(posix.join(remoteCwd, ".git"))} ]; then cd ${shellQuote(remoteCwd)} && git fetch --all --prune; else rm -rf ${shellQuote(remoteCwd)} && git clone ${shellQuote(repo)} ${shellQuote(remoteCwd)}; fi`);
 }
 
 function switchBranchCommand(remoteCwd: string, branch: string, baseBranch: string): string {
-  return `cd ${shellQuote(remoteCwd)} && (git switch ${shellQuote(branch)} || git switch -c ${shellQuote(branch)} ${shellQuote(baseBranch)})`;
+  return withGitProtocolGuard(`cd ${shellQuote(remoteCwd)} && (git switch ${shellQuote(branch)} || git switch -c ${shellQuote(branch)} ${shellQuote(baseBranch)})`);
 }
 
 function worktreeCommand(repoCwd: string, remoteCwd: string, branch: string, baseBranch: string): string {
-  return `if [ -e ${shellQuote(posix.join(remoteCwd, ".git"))} ]; then cd ${shellQuote(remoteCwd)} && git fetch --all --prune && git switch ${shellQuote(branch)}; else rm -rf ${shellQuote(remoteCwd)} && cd ${shellQuote(repoCwd)} && git worktree add -B ${shellQuote(branch)} ${shellQuote(remoteCwd)} ${shellQuote(baseBranch)}; fi`;
+  return withGitProtocolGuard(`if [ -e ${shellQuote(posix.join(remoteCwd, ".git"))} ]; then cd ${shellQuote(remoteCwd)} && git fetch --all --prune && git switch ${shellQuote(branch)}; else rm -rf ${shellQuote(remoteCwd)} && cd ${shellQuote(repoCwd)} && git worktree add -B ${shellQuote(branch)} ${shellQuote(remoteCwd)} ${shellQuote(baseBranch)}; fi`);
 }
 
 function inspectPathCommand(target: string): string {
@@ -539,6 +549,14 @@ function safeGitRepo(value: string | undefined): string | undefined {
   if (!repo) return undefined;
   if (repo.includes("\0") || repo.startsWith("-")) {
     throw new Error(`repo is not safe: ${value}`);
+  }
+  // Reject git transport-helper syntax ("ext::<cmd>", "fd::...") and file:
+  // transports. These are not shell-metacharacter injection (shellQuote handles
+  // that) — git itself would execute the helper command. GIT_ALLOW_PROTOCOL
+  // (see syncCommand/worktreeCommand) is the enforcing layer; this is an
+  // earlier, clearer rejection. "scheme://" and scp-like "git@host:path" pass.
+  if (/^[a-z][a-z0-9+.-]*::/i.test(repo) || /^file:/i.test(repo)) {
+    throw new Error(`repo transport is not allowed: ${value}`);
   }
   return repo;
 }

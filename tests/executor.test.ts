@@ -1180,7 +1180,7 @@ test("coder executor can expose workspace env while syncing a remote git project
   await executor.prepare?.({ env: { LOOM_AGENT_TOKEN: "agent-secret" } });
 
   assert.equal(calls.length, 3);
-  assert.match(calls[2].args[5], /^env LOOM_AGENT_TOKEN='agent-secret' sh -lc 'if \[ -d/);
+  assert.match(calls[2].args[5], /^env LOOM_AGENT_TOKEN='agent-secret' sh -lc 'export GIT_ALLOW_PROTOCOL=https:http:ssh:git; if \[ -d/);
   assert.match(calls[2].args[5], /git clone/);
   assert.match(calls[2].args[5], /https:\/\/git\.example\/team\/app\.git/);
   assert.doesNotMatch(calls[1].args[5], /agent-secret/);
@@ -1233,6 +1233,31 @@ test("coder executor rejects repo URLs that can be parsed as git flags", () => {
   );
 });
 
+test("coder executor rejects git transport-helper and file repo URLs", () => {
+  for (const repo of ["ext::sh -c id", "fd::17/foo", "file:///etc/passwd"]) {
+    assert.throws(
+      () => createCoderExecutor({
+        workspace: "alice-dev",
+        remoteCwd: "/home/dev/projects/app",
+        repo,
+      }),
+      /repo transport is not allowed/,
+      `expected ${repo} to be rejected`,
+    );
+  }
+  // Normal transports still accepted.
+  assert.doesNotThrow(() => createCoderExecutor({
+    workspace: "alice-dev",
+    remoteCwd: "/home/dev/projects/app",
+    repo: "https://git.example/team/app.git",
+  }));
+  assert.doesNotThrow(() => createCoderExecutor({
+    workspace: "alice-dev",
+    remoteCwd: "/home/dev/projects/app",
+    repo: "git@git.example:team/app.git",
+  }));
+});
+
 test("coder executor checks out a task branch after syncing the project", async () => {
   const calls: Array<{ file: string; args: string[]; timeoutMs: number }> = [];
   const executor = createCoderExecutor({
@@ -1257,7 +1282,7 @@ test("coder executor checks out a task branch after syncing the project", async 
     "--",
     "sh",
     "-lc",
-    "cd '/home/dev/projects/app' && (git switch 'task/issue-123' || git switch -c 'task/issue-123' 'origin/main')",
+    "export GIT_ALLOW_PROTOCOL=https:http:ssh:git; cd '/home/dev/projects/app' && (git switch 'task/issue-123' || git switch -c 'task/issue-123' 'origin/main')",
   ]);
 });
 
@@ -1291,7 +1316,7 @@ test("coder executor can prepare an isolated git worktree for a run", async () =
     "--",
     "sh",
     "-lc",
-    "if [ -e '/home/dev/worktrees/run-1/.git' ]; then cd '/home/dev/worktrees/run-1' && git fetch --all --prune && git switch 'task/run-1'; else rm -rf '/home/dev/worktrees/run-1' && cd '/home/dev/projects/app' && git worktree add -B 'task/run-1' '/home/dev/worktrees/run-1' 'origin/main'; fi",
+    "export GIT_ALLOW_PROTOCOL=https:http:ssh:git; if [ -e '/home/dev/worktrees/run-1/.git' ]; then cd '/home/dev/worktrees/run-1' && git fetch --all --prune && git switch 'task/run-1'; else rm -rf '/home/dev/worktrees/run-1' && cd '/home/dev/projects/app' && git worktree add -B 'task/run-1' '/home/dev/worktrees/run-1' 'origin/main'; fi",
   ]);
 });
 

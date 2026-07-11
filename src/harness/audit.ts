@@ -81,15 +81,54 @@ export interface TenantAuditEvent<T = unknown> {
 
 export type TenantAuditAppender = <T>(tenant: string, type: TenantAuditEventType, data: T, actor?: TenantAuditActor) => Promise<TenantAuditEvent<T>>;
 
+const AUDIT_MAX_STRING_LENGTH = 2000;
+
+// Scrub secret material out of free-text string values before an audit event is
+// persisted and served (GET /tenants/:tenant/audit is viewer-readable). This
+// targets secrets embedded in error messages and other free text — e.g. an
+// upstream failure that echoes a credentialed URL or a bearer token — which key
+// name filtering cannot catch because the field name (e.g. "error") is not
+// itself sensitive. It deliberately does NOT redact by key name, so structured
+// non-secret metadata the audit records on purpose (tokenEnvName, apiKeyId,
+// modelKeyEnv — env var names, not secrets) is preserved.
+function scrubAuditString(value: string): string {
+  let scrubbed = value
+    // URL userinfo: scheme://user:pass@host -> scheme://[redacted]@host
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1[redacted]@")
+    // Authorization bearer tokens.
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    // Inline secret assignments: token=..., secret: ..., api_key=..., etc.
+    .replace(/\b(token|secret|password|passwd|api[_-]?key|access[_-]?key|authorization)\b(\s*[=:]\s*)\S+/gi, "$1$2[redacted]");
+  if (scrubbed.length > AUDIT_MAX_STRING_LENGTH) {
+    scrubbed = `${scrubbed.slice(0, AUDIT_MAX_STRING_LENGTH - 3)}...`;
+  }
+  return scrubbed;
+}
+
+function sanitizeAuditData(value: unknown, depth = 0): unknown {
+  if (depth > 8) return "[redacted:depth]";
+  if (typeof value === "string") return scrubAuditString(value);
+  if (Array.isArray(value)) return value.map((entry) => sanitizeAuditData(entry, depth + 1));
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = sanitizeAuditData(entry, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
 export function createTenantAuditAppender(workspaceRoot: string, eventStore?: EventStore): TenantAuditAppender {
   const queues = new Map<string, Promise<void>>();
   return async <T>(tenant: string, type: TenantAuditEventType, data: T, actor?: TenantAuditActor): Promise<TenantAuditEvent<T>> => {
+    const safeData = sanitizeAuditData(data) as T;
     let observed: TenantAuditEvent<T> | undefined;
     const previous = queues.get(tenant) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(async () => {
       observed = eventStore
-        ? await appendTenantAuditEventToStore(eventStore, tenant, type, data, actor)
-        : await appendTenantAuditEvent(workspaceRoot, tenant, type, data, actor);
+        ? await appendTenantAuditEventToStore(eventStore, tenant, type, safeData, actor)
+        : await appendTenantAuditEvent(workspaceRoot, tenant, type, safeData, actor);
     });
     queues.set(tenant, next.then(() => undefined, () => undefined));
     await next;

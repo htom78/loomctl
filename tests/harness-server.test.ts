@@ -574,6 +574,60 @@ test("HTTP harness run replay redacts sensitive diagnostic keys and drops nested
   );
 });
 
+test("HTTP harness scrubs secrets from free-text audit values", async () => {
+  const workspaceRoot = await tempDir("loom-http-audit-scrub");
+
+  await withServer(
+    workspaceRoot,
+    async (baseUrl) => {
+      const create = await fetch(`${baseUrl}/runs`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer dev-key" },
+        body: JSON.stringify({
+          tenant: "alice",
+          project: "proj-a",
+          goal: "audit scrub run",
+          script: [{ message: "finish", finish: true }],
+          verify: [],
+        }),
+      });
+      assert.equal(create.status, 201);
+      const summary = await create.json();
+
+      const secretMessage =
+        "deploy https://alice:s3cr3tPass@vault.internal/db then Authorization: Bearer TOPSECRET123 with token=ANOTHERSECRET";
+      const comment = await fetch(`${baseUrl}/tenants/alice/runs/${summary.runId}/comments?project=proj-a`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer viewer-key" },
+        body: JSON.stringify({ message: secretMessage }),
+      });
+      assert.equal(comment.status, 201);
+
+      const audit = await fetch(`${baseUrl}/tenants/alice/audit?project=proj-a`, {
+        headers: { authorization: "Bearer viewer-key" },
+      });
+      assert.equal(audit.status, 200);
+      const auditText = await audit.text();
+      // The three secret values must never reach the viewer-readable audit feed.
+      assert.equal(auditText.includes("s3cr3tPass"), false, "URL password must be scrubbed");
+      assert.equal(auditText.includes("TOPSECRET123"), false, "bearer token must be scrubbed");
+      assert.equal(auditText.includes("ANOTHERSECRET"), false, "inline token= value must be scrubbed");
+      // Non-secret text around them is preserved.
+      assert.equal(auditText.includes("deploy"), true);
+      assert.equal(auditText.includes("vault.internal"), true);
+      assert.equal(auditText.includes("[redacted]"), true);
+    },
+    {
+      tenantApiKeys: {
+        alice: [
+          { token: "dev-key", actor: "dev-user", role: "developer" },
+          { token: "viewer-key", actor: "view-user", role: "viewer" },
+        ],
+      },
+    },
+  );
+});
+
 test("HTTP harness records run comments in events, replay, and tenant audit", async () => {
   const workspaceRoot = await tempDir("loom-http-run-comments");
 
