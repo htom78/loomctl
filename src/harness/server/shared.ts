@@ -429,7 +429,13 @@ function replayRetryDetail(data: Record<string, unknown>): string | undefined {
 
 function replayDiagnosticDetails(value: unknown): string | undefined {
   const details = recordData(value);
-  const pairs = Object.entries(details).map(([key, entry]) => `${key}=${replayDiagnosticValue(entry)}`);
+  // This detail renders into viewer-readable run replay and the tenant audit
+  // stream. Drop entries whose key names a secret and bound each value, matching
+  // the run-summary diagnostic filter, so an upstream error that echoes a token
+  // cannot leak through the diagnostic path.
+  const pairs = Object.entries(details)
+    .filter(([key]) => !isSensitiveDiagnosticKey(key))
+    .map(([key, entry]) => `${key}=${boundedDiagnosticText(replayDiagnosticValue(entry), 200)}`);
   return pairs.length ? replayText(pairs.join(" ")) : undefined;
 }
 

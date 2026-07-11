@@ -266,7 +266,7 @@ function apiKeyFromCreateBody(
   options: { now?: number; rotatedFromId?: string } = {},
 ): { apiKey: TenantApiKey; token: string } {
   const now = options.now ?? Date.now();
-  const token = body.token === undefined ? generateTenantApiToken() : apiToken(body.token);
+  const token = body.token === undefined ? generateTenantApiToken() : newApiToken(body.token);
   const expiresAt = body.expiresAt === undefined ? undefined : apiKeyTimestamp(body.expiresAt, "expiresAt");
   if (expiresAt && Date.parse(expiresAt) <= now) throw routeError("BadRequest", "expiresAt must be in the future.");
   return {
@@ -319,10 +319,31 @@ function apiKeyRole(value: unknown, field: string): TenantRole {
   return value;
 }
 
+// Caller-supplied tokens must carry real entropy. The server's own
+// generateTenantApiToken() emits ~37 chars; a 24-char floor rejects toy or
+// guessable tokens ("a", "admin") without blocking a strong custom token.
+const MIN_API_TOKEN_LENGTH = 24;
+
+// Lenient: shape-only validation for tokens already persisted in policy.json.
+// Existing stored tokens are not re-scored for entropy on load, so a legacy
+// short token keeps working and does not break policy parsing.
 function apiToken(value: unknown): string {
   const token = requiredString(value, "token").trim();
   if (token.length > 512 || /[\0\r\n]/.test(token)) {
     throw routeError("BadRequest", "token must be a single-line string at most 512 characters.");
+  }
+  return token;
+}
+
+// Strict: for a new caller-supplied token at the create endpoint. Enforces the
+// entropy floor so a tenant admin cannot register a weak, guessable token.
+function newApiToken(value: unknown): string {
+  const token = apiToken(value);
+  if (token.length < MIN_API_TOKEN_LENGTH) {
+    throw routeError(
+      "BadRequest",
+      `token must be at least ${MIN_API_TOKEN_LENGTH} characters; omit it to have a strong token generated.`,
+    );
   }
   return token;
 }

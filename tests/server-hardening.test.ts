@@ -213,3 +213,66 @@ test("--allow-unsafe-local-executor refuses the cross-tenant shell.exec RCE even
   // single-user (no tenant auth) with shell.exec stays allowed on loopback
   assert.deepEqual(unsafeLocalExecutorReasons({ ...base, allowShell: true }, false), []);
 });
+
+test("OPTIONS preflight is subject to rate limiting (not a bypass)", async () => {
+  const workspaceRoot = await tempDir("loom-rate-limit-options");
+  const server = createHarnessHttpServer({
+    workspaceRoot,
+    allowUnsafeLocalExecutor: true,
+    rateLimitRps: 1,
+    rateLimitBurst: 2,
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  try {
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const r = await fetch(`${baseUrl}/runs`, { method: "OPTIONS" });
+      statuses.push(r.status);
+      await r.arrayBuffer();
+    }
+    // First OPTIONS within burst succeeds (204); once the bucket drains they 429.
+    assert.equal(statuses[0], 204);
+    assert.equal(statuses.includes(429), true, "OPTIONS flood must be throttled, not exempt");
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test("policy api-key endpoint rejects weak caller-supplied tokens", async () => {
+  const workspaceRoot = await tempDir("loom-weak-api-token");
+  const server = createHarnessHttpServer({
+    workspaceRoot,
+    allowUnsafeLocalExecutor: true,
+    tenantApiKeys: {
+      alice: [{ token: "operator-admin-key", actor: "ops", role: "admin" }],
+    },
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+
+  try {
+    const weak = await fetch(`${baseUrl}/tenants/alice/policy/api-keys`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer operator-admin-key" },
+      body: JSON.stringify({ actor: "temp", role: "viewer", token: "a" }),
+    });
+    assert.equal(weak.status, 400);
+    await weak.arrayBuffer();
+
+    const strong = await fetch(`${baseUrl}/tenants/alice/policy/api-keys`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer operator-admin-key" },
+      body: JSON.stringify({ actor: "temp", role: "viewer", token: "a-sufficiently-long-custom-token-value" }),
+    });
+    assert.equal(strong.status, 201);
+    await strong.arrayBuffer();
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

@@ -289,15 +289,17 @@ export function createHarnessHttpServer(options: HarnessServerOptions): Server {
   const server = createServer(async (req, res) => {
     setCorsHeaders(res);
 
-    if (req.method === "OPTIONS") {
-      res.writeHead(204).end();
-      return;
-    }
-
+    // Rate-limit before dispatching anything, including OPTIONS preflight, so a
+    // preflight flood cannot bypass the limiter. Health/readiness probes stay exempt.
     const requestPath = (req.url ?? "/").split("?")[0];
     if (requestPath !== "/healthz" && requestPath !== "/readyz" && !takeRateLimitToken(rateLimitClientKey(req))) {
       res.setHeader("retry-after", "1");
       writeJson(res, 429, { error: "too many requests" });
+      return;
+    }
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204).end();
       return;
     }
 

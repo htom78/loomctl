@@ -256,21 +256,21 @@ test("tenant API key rotation supports zero-downtime overlap and targeted revoca
     const createdResponse = await fetch(`${baseUrl}/tenants/alice/policy/api-keys`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer admin-key" },
-      body: JSON.stringify({ actor: "developer", role: "developer", token: "old-developer-key" }),
+      body: JSON.stringify({ actor: "developer", role: "developer", token: "old-developer-key-000000000000" }),
     });
     assert.equal(createdResponse.status, 201);
     const created = await createdResponse.json();
     assert.match(created.apiKey.id, /^key_/);
     assert.equal(created.apiKey.active, true);
-    assert.equal(JSON.stringify(created.policy).includes("old-developer-key"), false);
-    assert.equal((await tenantAccess(baseUrl, "old-developer-key")).status, 200);
+    assert.equal(JSON.stringify(created.policy).includes("old-developer-key-000000000000"), false);
+    assert.equal((await tenantAccess(baseUrl, "old-developer-key-000000000000")).status, 200);
 
     const rotatedResponse = await fetch(`${baseUrl}/tenants/alice/policy/api-keys/rotate`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer admin-key" },
       body: JSON.stringify({
         keyId: created.apiKey.id,
-        token: "new-developer-key",
+        token: "new-developer-key-000000000000",
         overlapSeconds: 0,
       }),
     });
@@ -280,9 +280,9 @@ test("tenant API key rotation supports zero-downtime overlap and targeted revoca
     assert.equal(rotated.previousApiKey.active, false);
     assert.equal(rotated.apiKey.rotatedFromId, created.apiKey.id);
     assert.equal(rotated.apiKey.active, true);
-    assert.equal(rotated.token, "new-developer-key");
-    assert.equal((await tenantAccess(baseUrl, "old-developer-key")).status, 401);
-    assert.equal((await tenantAccess(baseUrl, "new-developer-key")).status, 200);
+    assert.equal(rotated.token, "new-developer-key-000000000000");
+    assert.equal((await tenantAccess(baseUrl, "old-developer-key-000000000000")).status, 401);
+    assert.equal((await tenantAccess(baseUrl, "new-developer-key-000000000000")).status, 200);
 
     const revokedResponse = await fetch(`${baseUrl}/tenants/alice/policy/api-keys/revoke`, {
       method: "POST",
@@ -291,7 +291,7 @@ test("tenant API key rotation supports zero-downtime overlap and targeted revoca
     });
     assert.equal(revokedResponse.status, 200);
     assert.equal((await revokedResponse.json()).revoked, 1);
-    assert.equal((await tenantAccess(baseUrl, "new-developer-key")).status, 401);
+    assert.equal((await tenantAccess(baseUrl, "new-developer-key-000000000000")).status, 401);
 
     const auditResponse = await fetch(`${baseUrl}/tenants/alice/audit`, {
       headers: { authorization: "Bearer admin-key" },
@@ -299,8 +299,8 @@ test("tenant API key rotation supports zero-downtime overlap and targeted revoca
     assert.equal(auditResponse.status, 200);
     const audit = await auditResponse.json();
     assert.ok(audit.some((event: { type: string }) => event.type === "tenant_api_key_rotated"));
-    assert.equal(JSON.stringify(audit).includes("old-developer-key"), false);
-    assert.equal(JSON.stringify(audit).includes("new-developer-key"), false);
+    assert.equal(JSON.stringify(audit).includes("old-developer-key-000000000000"), false);
+    assert.equal(JSON.stringify(audit).includes("new-developer-key-000000000000"), false);
   } finally {
     await closeServer(harness);
   }
