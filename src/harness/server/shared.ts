@@ -512,18 +512,14 @@ async function requireServerStatusAccess(
     return access;
   }
 
-  if (oidc && headerCredential) {
-    let identity;
-    try {
-      identity = await oidc.authenticate(headerCredential);
-    } catch {
-      throw unauthorized("invalid tenant token");
-    }
-    const access = { actor: identity.actor, role: identity.role };
-    requireTenantRole(access, "admin");
-    return access;
-  }
-
+  // OIDC identities are deliberately NOT accepted here. Every OidcAccess is
+  // scoped to exactly one tenant (server-auth enforces a resolved tenant claim),
+  // so an OIDC "admin" is a tenant administrator, never a platform operator.
+  // The cross-tenant /status and /metrics views are an operator surface; a
+  // single-tenant admin JWT must not read every other tenant's runs and host
+  // paths. Platform operators authenticate to these endpoints with a key the
+  // operator configured at startup (--tenant-token / --tenant-key). OIDC admins
+  // retain full access to their own /tenants/:tenant/status.
   throw unauthorized("invalid tenant token");
 }
 

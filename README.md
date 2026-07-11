@@ -93,7 +93,10 @@ loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
 - The cross-tenant `GET /status` and `GET /metrics` views only accept keys the
   operator configured at startup (`--tenant-token`/`--tenant-key`). Keys a
   tenant self-issues via `POST /tenants/:tenant/policy/api-keys` never grant the
-  platform-wide view.
+  platform-wide view, and OIDC identities never do either — every OIDC token is
+  scoped to one tenant, so platform status requires a startup operator key even
+  in OIDC deployments. OIDC admins keep full access to their own
+  `/tenants/:tenant/status`.
 - Per-client-IP request rate limiting is on by default (`--rate-limit-rps 200`,
   `--rate-limit-burst 500`; `--rate-limit-rps 0` disables). `/healthz` and
   `/readyz` are exempt so probes keep working. Behind a reverse proxy, set

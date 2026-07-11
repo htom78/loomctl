@@ -158,7 +158,7 @@ test("OIDC endpoints require HTTPS unless explicitly enabled for local developme
   }), /must use HTTPS/);
 });
 
-test("harness HTTP authentication accepts OIDC identities and reports provider readiness", async () => {
+test("harness HTTP authentication accepts OIDC for tenant scope but not the global operator views", async () => {
   const { publicKey, privateKey } = await generateKeyPair("RS256");
   const jwk = await exportJWK(publicKey);
   const provider = await startOidcProvider({ ...jwk, kid: "http-key", alg: "RS256", use: "sig" });
@@ -166,6 +166,9 @@ test("harness HTTP authentication accepts OIDC identities and reports provider r
   const harness = createHarnessHttpServer({
     workspaceRoot,
     allowUnsafeLocalExecutor: true,
+    tenantApiKeys: {
+      alice: [{ token: "operator-admin-key", actor: "ops", role: "admin" }],
+    },
     oidcAuth: {
       issuer: provider.issuer,
       audience: "loom-harness",
@@ -215,8 +218,28 @@ test("harness HTTP authentication accepts OIDC identities and reports provider r
       authenticated: true,
     });
 
-    const statusResponse = await fetch(`${baseUrl}/status`, {
+    // OIDC identities are tenant-scoped: even a role=admin JWT must NOT reach the
+    // cross-tenant global /status or /metrics operator views. A tenant developer
+    // JWT is likewise rejected (rejection happens before any role check).
+    assert.equal((await fetch(`${baseUrl}/status`, {
       headers: { authorization: `Bearer ${token}` },
+    })).status, 401);
+    assert.equal((await fetch(`${baseUrl}/metrics`, {
+      headers: { authorization: `Bearer ${token}` },
+    })).status, 401);
+    assert.equal((await fetch(`${baseUrl}/status`, {
+      headers: { authorization: `Bearer ${developerToken}` },
+    })).status, 401);
+
+    // The OIDC admin keeps full access to its own tenant status.
+    assert.equal((await fetch(`${baseUrl}/tenants/alice/status`, {
+      headers: { authorization: `Bearer ${token}` },
+    })).status, 200);
+
+    // A startup-configured operator key reads the global views, which report
+    // OIDC provider readiness without leaking the token.
+    const statusResponse = await fetch(`${baseUrl}/status`, {
+      headers: { authorization: "Bearer operator-admin-key" },
     });
     assert.equal(statusResponse.status, 200);
     const status = await statusResponse.json();
@@ -224,12 +247,8 @@ test("harness HTTP authentication accepts OIDC identities and reports provider r
     assert.equal(status.server.identity.oidc.issuer, provider.issuer);
     assert.equal(JSON.stringify(status).includes(token), false);
 
-    assert.equal((await fetch(`${baseUrl}/status`, {
-      headers: { authorization: `Bearer ${developerToken}` },
-    })).status, 403);
-
     const metrics = await (await fetch(`${baseUrl}/metrics`, {
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: "Bearer operator-admin-key" },
     })).text();
     assert.match(metrics, /^loom_harness_oidc_ready 1$/m);
   } finally {
