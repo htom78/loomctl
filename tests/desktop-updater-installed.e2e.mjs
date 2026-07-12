@@ -148,6 +148,7 @@ async function invoke(command, args = {}) {
 }
 
 async function restart() {
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
   await browser.reloadSession();
   await browser.waitUntil(async () => (await browser.getTitle()) === "Loom Desktop", {
     timeout: 20_000,
