@@ -45,8 +45,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y dbus-x11 gnome-keyring libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf webkit2gtk-driver xvfb
       - run: npm ci
       - run: npm run api:build
-      - name: Install Tauri WebDriver
-        run: cargo install tauri-driver --version 2.0.6 --locked
       - name: Build signed rollback AppImage
         run: npm run tauri --workspace @loom/desktop -- build --ci --features e2e --bundles appimage --config src-tauri/tauri.e2e.conf.json
       - name: Preserve rollback fixtures
@@ -84,7 +82,7 @@ jobs:
           chmod +x .codex-tmp/updater-install-e2e/Loom_Desktop.AppImage
           root=$(realpath .codex-tmp/updater-install-e2e)
           printf 'LOOM_DESKTOP_E2E_BINARY=%s/Loom_Desktop.AppImage\n' "$root" >> "$GITHUB_ENV"
-          printf 'LOOM_DESKTOP_E2E_DRIVER=external\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_DRIVER=embedded\n' >> "$GITHUB_ENV"
           printf 'LOOM_DESKTOP_E2E_SPEC=./tests/desktop-updater-installed.e2e.mjs\n' >> "$GITHUB_ENV"
           printf 'LOOM_DESKTOP_E2E_UPDATE_BASE_URL=http://127.0.0.1:18787/\n' >> "$GITHUB_ENV"
           printf 'LOOM_DESKTOP_E2E_FORWARD_ARTIFACT=%s/forward.update\n' "$root" >> "$GITHUB_ENV"
