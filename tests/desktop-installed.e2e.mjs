@@ -55,7 +55,12 @@ describe("installed Loom Desktop", () => {
     assert.match(callbackUrl ?? "", /^loom:\/\/auth\/callback\?code=/);
 
     await browser.tauri.triggerDeeplink(callbackUrl);
-    await $(".health.ok").waitForDisplayed({ timeout: 20_000 });
+    await browser.waitUntil(async () => {
+      if (await $(".health.ok").isDisplayed()) return true;
+      const error = await $(".error-banner");
+      if (await error.isDisplayed()) throw new Error(`Desktop callback failed: ${await error.getText()}`);
+      return false;
+    }, { timeout: 20_000, timeoutMsg: "Desktop did not become ready after OIDC callback" });
     await $("button=installed-e2e").waitForDisplayed();
 
     const runRow = await $("//button[contains(@class,'run-row')][contains(.,'Installed app E2E run')]");
