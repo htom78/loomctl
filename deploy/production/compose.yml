@@ -44,9 +44,20 @@ x-loom-common: &loom-common
     - --control-plane-token-env
     - LOOM_CONTROL_PLANE_TOKEN
     - --control-plane-pr
+    - --control-plane-merge
+    - --control-plane-comment
     - --control-plane-comment-sync
+    - --tenant-control-plane-token-env
+    - production=LOOM_CONTROL_PLANE_TOKEN
     - --control-plane-webhook-secret-env
     - LOOM_GITEA_WEBHOOK_SECRET
+    - --ingest-brain
+    - --allow-tool
+    - git.pr
+    - --oidc-issuer
+    - ${LOOM_OIDC_ISSUER}
+    - --oidc-audience
+    - ${LOOM_OIDC_AUDIENCE}
     - --rate-limit-trusted-proxy-hops
     - "1"
     # Operator key gating the cross-tenant /status and /metrics views. Without a

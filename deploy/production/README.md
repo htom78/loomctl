@@ -16,10 +16,11 @@ cp deploy/production/.env.example deploy/production/.env
 ```
 
 Then validate the inputs without starting anything or contacting external
-systems:
+systems. Pass the env file explicitly; the checker fails if a required secret
+is missing or still set to `CHANGE_ME`:
 
 ```bash
-npm run production:check
+npm run production:check -- deploy/production/.env
 ```
 
 It checks the required env, HTTPS URLs, and secret-env names, then runs the
@@ -63,6 +64,9 @@ Coder executor:
 
 Coder isolation is not yet validated at runtime here (see the top-level
 readiness notes); treat the Docker executor as the interim boundary.
+`production:check` intentionally validates the target Coder contract, while
+this self-contained compose remains the Docker fallback. A green config check
+does not promote the fallback into final production acceptance.
 
 ## 4. Verify
 
@@ -96,6 +100,9 @@ you need a tighter recovery point.
   an operator key (`--tenant-key-env production=LOOM_OPERATOR_TOKEN:...`). Without
   a status key those cross-tenant views are **open**, leaking run metadata and
   host paths — so `LOOM_OPERATOR_TOKEN` is required, not optional.
+- **OIDC is mandatory in this production shape**: both harness instances use
+  `LOOM_OIDC_ISSUER` and `LOOM_OIDC_AUDIENCE`; readiness stays red if discovery
+  or JWKS loading fails.
 - **Monitoring** (opt-in profile): a ready Prometheus + Grafana stack ships in
   [`../observability/`](../observability/). Drop the operator token into the file
   Prometheus reads, then start the profile:

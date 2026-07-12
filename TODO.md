@@ -192,6 +192,14 @@ Estimated effort: 3-5 person-weeks.
       same-release artifact/signature IDs before publishing. Promotion rejects
       channel/tag/version drift and removes stale rollback manifests on an
       idempotent re-promotion.
+- [x] Make the production authentication and integration configuration fail
+      closed before cutover. `production:check` explicitly loads the selected
+      env file, rejects missing and `CHANGE_ME` secrets without printing values,
+      and validates the target Coder, OIDC, tenant-scoped control-plane,
+      signed-webhook, PR/merge/comment, Brain ingest, and run-worktree contract.
+      The self-contained production compose wires the same authentication and
+      side-effect flags, while its Docker executor remains an interim runtime
+      and does not satisfy the final Coder acceptance gate.
 
 Acceptance gate:
 

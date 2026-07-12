@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 const root = process.cwd();
+const envFile = process.argv[2];
+if (envFile) process.loadEnvFile(resolve(root, envFile));
 const checks = [];
 const check = (name, ok, details = {}) => checks.push({ name, ok, ...details });
 const required = (name, details = {}) => {
@@ -11,10 +13,23 @@ const required = (name, details = {}) => {
   check(name, ok, { required: true, ...details });
   return ok;
 };
+const requiredConnection = (name) => {
+  const value = process.env[name]?.trim();
+  const ok = Boolean(value && !value.includes("CHANGE_ME"));
+  check(name, ok, { required: true, kind: "connection" });
+  return ok;
+};
+const requiredSecret = (name) => {
+  const value = process.env[name]?.trim();
+  const ok = Boolean(value && value !== "CHANGE_ME");
+  check(name, ok, { required: true, kind: "secret" });
+  return ok;
+};
 const requiredSecretEnv = (name) => {
   const envName = process.env[name];
   const validName = typeof envName === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(envName);
-  const ok = validName && Boolean(process.env[envName]?.trim());
+  const value = validName ? process.env[envName]?.trim() : undefined;
+  const ok = Boolean(value && value !== "CHANGE_ME");
   check(`${name}->value`, ok, { required: true, kind: "secret-env", envName: validName ? envName : undefined });
   return ok;
 };
@@ -31,8 +46,9 @@ const requiredHttpsUrl = (name) => {
 
 check("build", existsSync(resolve(root, "dist/index.js")), { required: true, hint: "run npm run build" });
 required("LOOM_WORKSPACE_ROOT", { kind: "path" });
-required("LOOM_POSTGRES_URL", { kind: "connection" });
-required("LOOM_REDIS_URL", { kind: "connection" });
+requiredConnection("LOOM_POSTGRES_URL");
+requiredSecret("LOOM_POSTGRES_PASSWORD");
+requiredConnection("LOOM_REDIS_URL");
 requiredHttpsUrl("LOOM_MODEL_BASE_URL");
 required("LOOM_MODEL_KEY_ENV", { kind: "env-name" });
 required("LOOM_CODER_WORKSPACE", { kind: "template" });
@@ -42,6 +58,8 @@ required("LOOM_CODER_PREVIEW_URL", { kind: "url-template" });
 requiredHttpsUrl("LOOM_CONTROL_PLANE_URL");
 required("LOOM_CONTROL_PLANE_TOKEN_ENV", { kind: "env-name" });
 requiredSecretEnv("LOOM_CONTROL_PLANE_TOKEN_ENV");
+required("LOOM_CONTROL_PLANE_WEBHOOK_SECRET_ENV", { kind: "env-name" });
+requiredSecretEnv("LOOM_CONTROL_PLANE_WEBHOOK_SECRET_ENV");
 requiredHttpsUrl("LOOM_OIDC_ISSUER");
 required("LOOM_OIDC_AUDIENCE");
 required("LOOM_OPERATOR_TOKEN_ENV", { kind: "env-name" });
@@ -68,6 +86,14 @@ if (preflightOk) {
     "--model-key-env", process.env.LOOM_MODEL_KEY_ENV,
     "--control-plane-url", process.env.LOOM_CONTROL_PLANE_URL,
     "--control-plane-token-env", process.env.LOOM_CONTROL_PLANE_TOKEN_ENV,
+    "--tenant-control-plane-token-env", `production=${process.env.LOOM_CONTROL_PLANE_TOKEN_ENV}`,
+    "--control-plane-pr",
+    "--control-plane-merge",
+    "--control-plane-comment",
+    "--control-plane-comment-sync",
+    "--control-plane-webhook-secret-env", process.env.LOOM_CONTROL_PLANE_WEBHOOK_SECRET_ENV,
+    "--ingest-brain",
+    "--allow-tool", "git.pr",
     "--oidc-issuer", process.env.LOOM_OIDC_ISSUER,
     "--oidc-audience", process.env.LOOM_OIDC_AUDIENCE,
     "--tenant-key-env", `production=${operatorEnv}:operator:admin`,
