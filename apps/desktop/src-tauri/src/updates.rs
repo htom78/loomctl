@@ -134,13 +134,18 @@ fn channel_url(channel: &str, file: &str) -> Result<Url, String> {
         return Err("update channel must be stable or beta".into());
     }
     #[cfg(feature = "e2e")]
-    if let Ok(base) = std::env::var("LOOM_DESKTOP_E2E_UPDATE_BASE_URL") {
+    {
+        let base = std::env::var("LOOM_DESKTOP_E2E_UPDATE_BASE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:18787/".into());
         return loopback_channel_url(&base, channel, file);
     }
-    Url::parse(&format!(
-        "https://github.com/htom78/loomctl/releases/download/desktop-{channel}/{file}"
-    ))
-    .map_err(|_| "invalid update channel URL".into())
+    #[cfg(not(feature = "e2e"))]
+    {
+        Url::parse(&format!(
+            "https://github.com/htom78/loomctl/releases/download/desktop-{channel}/{file}"
+        ))
+        .map_err(|_| "invalid update channel URL".into())
+    }
 }
 
 #[cfg(feature = "e2e")]
@@ -182,6 +187,7 @@ mod tests {
     use minisign_verify::{PublicKey, Signature};
     use std::{env, fs};
 
+    #[cfg(not(feature = "e2e"))]
     #[test]
     fn update_channels_are_fixed_to_project_releases() {
         assert_eq!(
