@@ -1,0 +1,112 @@
+# Production deployment: two harness instances behind an Nginx TLS reverse
+# proxy, backed by PostgreSQL + Redis. Copy .env.example to .env and fill it in
+# first. Unlike deploy/staging, this uses an isolated executor (NOT
+# --allow-unsafe-local-executor) and wires the control plane and the
+# reverse-proxy-aware rate limiter from the environment.
+#
+#   docker compose -f deploy/production/compose.yml --env-file deploy/production/.env up -d --build
+#
+# PostgreSQL and Redis are included for a self-contained start; for real
+# production point LOOM_POSTGRES_URL / LOOM_REDIS_URL at managed instances and
+# remove the postgres/redis services + their volumes.
+
+x-loom-common: &loom-common
+  build:
+    context: ../..
+    dockerfile: deploy/staging/Dockerfile
+  restart: unless-stopped
+  environment:
+    LOOM_POSTGRES_URL: ${LOOM_POSTGRES_URL}
+    LOOM_REDIS_URL: ${LOOM_REDIS_URL}
+    LOOM_MODEL_KEY: ${LOOM_MODEL_KEY}
+    LOOM_CONTROL_PLANE_TOKEN: ${LOOM_CONTROL_PLANE_TOKEN}
+    LOOM_GITEA_WEBHOOK_SECRET: ${LOOM_GITEA_WEBHOOK_SECRET}
+    LOOM_ADMIN_TOKEN: ${LOOM_ADMIN_TOKEN}
+  command:
+    - harness
+    - serve
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "8787"
+    - --workspace-root
+    - /data/workspaces
+    - --state-backend
+    - postgres-redis
+    - --executor
+    - docker
+    - --model-base-url
+    - ${LOOM_MODEL_BASE_URL}
+    - --model-key-env
+    - LOOM_MODEL_KEY
+    - --control-plane-url
+    - ${LOOM_CONTROL_PLANE_URL}
+    - --control-plane-token-env
+    - LOOM_CONTROL_PLANE_TOKEN
+    - --control-plane-pr
+    - --control-plane-comment-sync
+    - --control-plane-webhook-secret-env
+    - LOOM_GITEA_WEBHOOK_SECRET
+    - --rate-limit-trusted-proxy-hops
+    - "1"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  loom-a:
+    <<: *loom-common
+    volumes:
+      - loom-a-workspaces:/data/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  loom-b:
+    <<: *loom-common
+    volumes:
+      - loom-b-workspaces:/data/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on: [loom-a, loom-b]
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./tls:/etc/nginx/tls:ro
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: loom
+      POSTGRES_PASSWORD: ${LOOM_POSTGRES_PASSWORD:-loom}
+      POSTGRES_DB: loom
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U loom -d loom"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - loom-postgres:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - loom-redis:/data
+
+volumes:
+  loom-a-workspaces:
+  loom-b-workspaces:
+  loom-postgres:
+  loom-redis:
