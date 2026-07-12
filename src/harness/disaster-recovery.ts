@@ -2,7 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, 
 import { createReadStream, createWriteStream } from "node:fs";
 import { chmod, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 
 import { execa } from "execa";

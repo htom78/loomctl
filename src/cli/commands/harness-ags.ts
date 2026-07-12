@@ -3,7 +3,7 @@ import { startAgentGitServiceContractServer } from "../../harness/agent-git-serv
 import { agentGitServiceGitRemoteUrl, agentGitServiceIssueUrl, createAgentGitServiceIssueComment, createAgentGitServiceIssueWorkspaceAttachment, listAgentGitServiceIssueComments, listAgentGitServiceIssueWorkspaces, parseAgentGitServiceIssueRef, parseAgentGitServiceRepoRef, readAgentGitServiceWikiMemory, updateAgentGitServiceWikiMemory } from "../../harness/agent-git-service.js";
 import { createUpstreamAgentGitServiceServerEnvPlan, type UpstreamAgentGitServiceServerEnvPlanCliOptions } from "../../harness/upstream-agent-git-service-server-env-plan.js";
 import { cliTokenValue, collect, compactObject, controlPlanePreflightBaseUrl, controlPlanePreflightDiscoveryEndpointUrl, controlPlanePreflightTokenEnv, DEFAULT_AGENT_GIT_SERVICE_TOKEN_ENV, isEnvName, isRecord, normalizeHttpBaseUrl, parseEnvNameFlag, parseSafeNameFlag, preflightErrorMessage, stringsOnly, writeJsonReportIfRequested } from "../lib/flags.js";
-import { controlPlaneTokenEnv } from "../lib/reporters.js";
+
 import { smokeJson } from "../lib/smoke.js";
 import { Command } from "commander";
 import { createHash } from "node:crypto";

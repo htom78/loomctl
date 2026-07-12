@@ -1,11 +1,10 @@
 import { type ProjectTemplateName } from "../../harness/project-templates.js";
 import { type ControlPlaneProviderName } from "../../harness/server.js";
 import { isRecord } from "./flags.js";
-import { runUrl } from "./reporters.js";
+
 import { requireSmokeStringArray } from "./smoke-verify-platform.js";
 import { verifySmokePresence, verifySmokeRunCommentReplay } from "./smoke-verify-runs.js";
 import { arrayFieldFromResponse, booleanFieldFromResponse, type HarnessSmokeAgentGitServiceCutoverResult, type HarnessSmokeAgentGitServiceHandoffAttachmentResult, type HarnessSmokeAgentGitServiceWikiMemoryResult, type HarnessSmokeBrainSignalResult, type HarnessSmokeCliOptions, type HarnessSmokeCoderResult, type HarnessSmokeGiteaCommentsResult, type HarnessSmokeGiteaPrResult, type HarnessSmokeOnlineResult, type HarnessSmokeProjectContractResult, type HarnessSmokeSourceDefaults, type HarnessSmokeSourceDefaultsResult, type HarnessSmokeVasBrainLearningResult, type HarnessSmokeVasResult, type HarnessSmokeVasReviewGateResult, hmacSha256, numberFieldFromResponse, optionalStringFieldFromResponse, recordFieldFromResponse, SMOKE_REQUIRED_PROJECT_CONTRACT_MARKERS, SMOKE_SOURCE_DEFAULTS, SMOKE_VAS_LITE_CONTRACT, SMOKE_VAS_LITE_DEFAULT_SKILLS, SMOKE_VAS_LITE_RUN_POLICY, smokeCheckError, smokeControlPlaneWebhookSecret, smokeJson, smokeText, stringFieldFromResponse } from "./smoke.js";
-import { join } from "node:path";
 
 export function verifySmokeExpectedControlPlaneProvider(
   expected: ControlPlaneProviderName | undefined,

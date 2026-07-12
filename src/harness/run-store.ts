@@ -66,15 +66,6 @@ export async function appendRunEvent<T>(runDir: string, type: HarnessEventType, 
   return appendEvent(eventsPath, basename(runDir) || "unknown", type, data, eventStore);
 }
 
-async function readRunEventsIfPresent(runDir: string): Promise<HarnessEvent[]> {
-  try {
-    return await readRunEvents(runDir);
-  } catch (error) {
-    if (isNotFound(error)) return [];
-    throw error;
-  }
-}
-
 async function appendEvent<T>(
   eventsPath: string,
   fallbackRunId: string,

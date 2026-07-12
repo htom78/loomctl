@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import { type TenantAuditEvent } from "../audit.js";
@@ -243,10 +243,6 @@ function requireSafeName(value: unknown, field: string): string {
   return name;
 }
 
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function optionalSafeName(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   return requireSafeName(value, field);
@@ -262,22 +258,6 @@ function requireString(value: unknown, field: string): string {
 function optionalString(value: unknown, field: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   return requireString(value, field);
-}
-
-function optionalSha256Hex(value: unknown, field: string): string | undefined {
-  const text = optionalString(value, field)?.trim().toLowerCase();
-  if (!text) return undefined;
-  if (!/^[a-f0-9]{64}$/.test(text)) throw badRequest(`${field} must be a lowercase sha256 hex string.`);
-  return text;
-}
-
-async function optionalFileSha256(path: string): Promise<string | undefined> {
-  try {
-    return createHash("sha256").update(await readFile(path, "utf8"), "utf8").digest("hex");
-  } catch (error) {
-    if (isNotFound(error)) return undefined;
-    throw error;
-  }
 }
 
 function optionalBoolean(value: unknown, field: string): boolean | undefined {

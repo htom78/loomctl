@@ -1,12 +1,11 @@
 import { type Dirent } from "node:fs";
-import { mkdir, open, readdir, readFile, rmdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rmdir, stat, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { type QueuedRunBlockedReason, type QueuedRunConcurrencySummary, type RunningRunStatus } from "../run-state.js";
-import { HarnessRunStart, RunCreateIdempotencyStatus, RUN_PAUSE_REQUEST_FILE, RUN_CANCEL_REQUEST_FILE, RUN_CONTROL_POLL_INTERVAL_MS, tenantActiveRunLimit, effectiveTenantActiveRunLimit, tenantRunCapacityScope, activeTenantRunCount, queuedRunConcurrencySummary, runCreateIdempotencyStatus } from "./runs.js";
+import { HarnessRunStart, RunCreateIdempotencyStatus, RUN_PAUSE_REQUEST_FILE, RUN_CANCEL_REQUEST_FILE, RUN_CONTROL_POLL_INTERVAL_MS, tenantActiveRunLimit, effectiveTenantActiveRunLimit, tenantRunCapacityScope, queuedRunConcurrencySummary, runCreateIdempotencyStatus } from "./runs.js";
 import { RunWorkspaceIsolation, HarnessWorkspaceContext, ActiveWorkspaceSession, WorkspaceSessionSummary, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, runWorkspacesAreIsolated, runWorkspaceIsolation } from "./workspace.js";
 import { HarnessServerOptions } from "./types.js";
 import { delay, compactObject, writeJsonFileAtomic, isSafeDirectoryName, conflict, isNotFound, isAlreadyExists } from "./shared.js";
-
 
 interface RunAdmissionClaim {
   schemaVersion: 1;

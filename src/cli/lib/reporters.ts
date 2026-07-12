@@ -8,7 +8,6 @@ import { formatRunRequesterSummary, parseGiteaIssueRef } from "../../harness/git
 import { type ControlPlaneProviderName } from "../../harness/server.js";
 import { cfg } from "./context.js";
 import { AGENT_GIT_SERVICE_URL_ENV, compactObject, DEFAULT_AGENT_GIT_SERVICE_TOKEN_ENV, DEFAULT_GITEA_TOKEN_ENV, type HarnessServeCliOptions } from "./flags.js";
-import { join, resolve } from "node:path";
 
 export function controlPlaneBaseUrl(options: HarnessServeCliOptions, provider: ControlPlaneProviderName): string {
   if (options.controlPlaneUrl) return options.controlPlaneUrl;

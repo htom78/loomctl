@@ -1,8 +1,7 @@
 import { isRecord } from "./flags.js";
-import { runUrl } from "./reporters.js";
+
 import { verifySmokeAgentGitServiceHandoffWorkspaceAttachment, verifySmokeContractPatchEvidence, verifySmokeProjectContractSnapshot, verifySmokeSourceDefaultsMetadata } from "./smoke-verify-integrations.js";
 import { arrayFieldFromResponse, booleanFieldFromResponse, type HarnessSmokeCliOptions, type HarnessSmokeFileCollabResult, type HarnessSmokeHandoffResult, type HarnessSmokeModelResult, type HarnessSmokeOnlineResult, type HarnessSmokePresenceExpectation, type HarnessSmokeRunControlsResult, type HarnessSmokeSourceDefaultsResult, type HarnessSmokeWorkspaceCommandResult, type HarnessSmokeWorkspaceSessionResult, numberFieldFromResponse, recordFieldFromResponse, sleep, SMOKE_POLL_TIMEOUT_MS, SMOKE_RUN_CONTROL_PAUSE_COMMAND, SMOKE_RUN_CONTROL_PAUSE_TIMEOUT_MS, SMOKE_RUN_CONTROL_RESUME_TIMEOUT_MS, type SmokeActiveRunLeaseEvidence, smokeCheckError, smokeHeaders, smokeJson, smokeUngatedRunDefaults, smokeViewerToken, stringFieldFromResponse } from "./smoke.js";
-import { resolve } from "node:path";
 
 export async function verifySmokeModelRun(
   url: string,
@@ -951,7 +950,7 @@ export async function verifySmokeHandoffEvidence(
     "passed",
     "smoke handoff follow-up run",
   );
-  const handoffFollowupRunStatus = stringFieldFromResponse(finishedFollowup.body, "status", "smoke handoff follow-up run");
+  stringFieldFromResponse(finishedFollowup.body, "status", "smoke handoff follow-up run");
   const followupMetadata = recordFieldFromResponse(finishedFollowup.body, "metadata", "smoke handoff follow-up run");
   const handoffFollowupSourceRunId = stringFieldFromResponse(followupMetadata, "handoffSourceRunId", "smoke handoff follow-up metadata");
   if (handoffFollowupSourceRunId !== runId) {
@@ -1330,7 +1329,7 @@ export async function verifySmokeRunControls(
     "smoke resumed run",
     SMOKE_RUN_CONTROL_RESUME_TIMEOUT_MS,
   );
-  const resumedRunStatus = stringFieldFromResponse(resumed.body, "status", "smoke resumed run");
+  stringFieldFromResponse(resumed.body, "status", "smoke resumed run");
   const pauseEvents = await smokeJson(pauseEventsUrl, { headers: developerHeaders }, [200], "GET smoke pause/resume events");
   const pauseEventBody = Array.isArray(pauseEvents.body) ? pauseEvents.body : [];
   const resumeEvent = pauseEventBody.find((event) =>

@@ -12,12 +12,11 @@ import { HARNESS_VISION_LOCK as SHARED_HARNESS_VISION_LOCK, ONLINE_SANDBOX_GOLDE
 import { PROCESS_SESSION_STOP_GRACE_MS } from "../executor.js";
 import { HarnessConcurrencyAdmissionStatus, runLeaseTtlMs, runningRunIsStale, activeTenantRunAdmissionClaimIds, persistedRunningRunHasActiveAdmissionClaim, queuedAdmissionTenantActiveRunLimit, queuedAdmissionProjectActiveWorkspace, queuedAdmissionPersistedRunningRun, queuedAdmissionReady, harnessConcurrencyAdmissionStatus } from "./admission.js";
 import { QueuedRun, ActiveRunSlot, RunCreateIdempotencyStatus, QueueRecoveryAudit, StaleRunCleanupAudit, tenantActiveRunLimit, effectiveTenantActiveRunLimit, activeTenantRunIds, queuedTenantRunCount, queuedRunPositions, isSafePersistedRunState, listPersistedRunDirs, findBlockingPersistedRunningRun, readRunStateForScan, activeRunKey, runCreateIdempotencyStatus } from "./runs.js";
-import { RunWorkspaceIsolation, ActiveWorkspaceSession, WorkspaceSessionSummary, WORKSPACE_FILE_READ_LIMIT_BYTES, WORKSPACE_FILE_WRITE_LIMIT_BYTES, WORKSPACE_OUTPUT_LIMIT_BYTES, WORKSPACE_SESSION_INPUT_LIMIT_BYTES, DEFAULT_MAX_WORKSPACE_SESSIONS, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, workspaceCommandTimeoutMs, workspaceSessionIdleTimeoutMs, activeWorkspaceSessionDetails, statusActiveWorkspaceSessionDetails, listWorkspaceTenantNames, activeRunWorkspaceKey, activeRunWorkspaceLeaseKey, runWorkspaceIsolation } from "./workspace.js";
+import { RunWorkspaceIsolation, ActiveWorkspaceSession, WorkspaceSessionSummary, WORKSPACE_FILE_READ_LIMIT_BYTES, WORKSPACE_FILE_WRITE_LIMIT_BYTES, WORKSPACE_OUTPUT_LIMIT_BYTES, WORKSPACE_SESSION_INPUT_LIMIT_BYTES, DEFAULT_MAX_WORKSPACE_SESSIONS, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, workspaceCommandTimeoutMs, workspaceSessionIdleTimeoutMs, statusActiveWorkspaceSessionDetails, listWorkspaceTenantNames, activeRunWorkspaceKey, activeRunWorkspaceLeaseKey, runWorkspaceIsolation } from "./workspace.js";
 import { agentGitServiceProjectAgentsReadiness, readProjectSummary, listTenantProjectNames } from "./projects.js";
 import { TenantControlPlaneIdentity, TenantPolicy, TenantPolicyChange, TenantHarnessServerStatus, TenantAccess, effectiveTenantAllowedTools, readTenantPolicySync, readTenantPolicy, writeTenantPolicy, tenantPolicyFromUnknown, tenantPolicyReplacementChange, isSafeTenantDirectoryName, requireTenantRole, tenantRoleRank } from "./tenants.js";
 import { HarnessServerOptions, ControlPlaneProviderName, ControlPlaneAgentIdentityMode, HTTP_JSON_BODY_LIMIT_BYTES } from "./types.js";
-import { compactObject, isNotFound, startedAt, bearerToken, headerValue, streamQueryToken, unauthorized } from "./shared.js";
-
+import { compactObject, isNotFound, bearerToken, headerValue, streamQueryToken, unauthorized } from "./shared.js";
 
 interface HarnessControlPlaneStatus {
   provider: ControlPlaneProviderName;

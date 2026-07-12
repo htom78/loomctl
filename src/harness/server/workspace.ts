@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import { join, posix, resolve } from "node:path";
 import { type TenantAuditAppender, type TenantRole } from "../audit.js";
@@ -17,7 +17,7 @@ import { controlPlaneIssueUrl } from "./status.js";
 import { ProjectSummary, projectWorkspaceSessionRoot, projectWorkspaceCommandRoot, readTenantProjectSummariesWithActivity, requireProjectExists, ProjectSourceDefaultValues, readProjectSourceDefaults, readAgentGitServiceAgentTokenSecret, projectWorkspaceContext, listTenantProjectNames, isProjectDirectoryName, refreshProjectPresenceFromDisk, projectPresenceEntries } from "./projects.js";
 import { TenantExecutorLimits, TenantAccess, effectiveTenantExecutorLimits, effectiveTenantExecutorTemplateParameters, requireTenantTool, readTenantPolicy, requireTenantAccess, isSafeTenantDirectoryName } from "./tenants.js";
 import { HarnessServerOptions, PullRequestReporterResult, WorkspacePullRequestRequest, RunWorkspaceIsolation, HarnessWorkspaceContext } from "./types.js";
-import { markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, compactObject, compactMetadata, seqAfter, recordData, stringField, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, isSafeDirectoryName, booleanFlag, positiveIntValue, badRequest, payloadTooLarge, conflict, notFound, writeJson, isNotFound, startedAt, readJsonBody, workspacePullRequestRef } from "./shared.js";
+import { markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, compactObject, compactMetadata, seqAfter, recordData, stringField, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, isSafeDirectoryName, booleanFlag, positiveIntValue, badRequest, payloadTooLarge, conflict, notFound, writeJson, isNotFound, readJsonBody, workspacePullRequestRef } from "./shared.js";
 
 async function readWorkspaceFileJson(req: IncomingMessage): Promise<WorkspaceFileWriteRequestBody> {
   return readJsonBody<WorkspaceFileWriteRequestBody>(req);

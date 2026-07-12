@@ -7,7 +7,6 @@ import { verifySmokeAgentGitServiceCutover, verifySmokeBrainSignal, verifySmokeC
 import { verifySmokeAuthRoles, verifySmokeBackupManifest, verifySmokeGates, verifySmokeHealthProbes, verifySmokeMetrics, verifySmokeOnlineSandboxGoldenPath, verifySmokePolicyEscalation, verifySmokeServerProfile, verifySmokeTenantIsolation, verifySmokeTenantProfileTools, verifySmokeWarningMetrics } from "./smoke-verify-platform.js";
 import { verifySmokeFileCollab, verifySmokeHandoffEvidence, verifySmokeModelRun, verifySmokeRunControls, verifySmokeWorkspaceCommand, verifySmokeWorkspaceSession } from "./smoke-verify-runs.js";
 import { createHmac } from "node:crypto";
-import { join, resolve } from "node:path";
 
 export interface HarnessSmokeCliOptions {
   url: string;

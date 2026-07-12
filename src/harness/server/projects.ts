@@ -8,8 +8,8 @@ import type { ProjectContractEvidence, ProjectContractPatch, ProjectContractStat
 import { type ControlPlaneProviderCatalogName } from "../control-plane.js";
 import { AGENT_GIT_SERVICE_PROJECT_PROVISIONING_RECEIPT_PATH, provisionAgentGitServiceProjectAgent, readAgentGitServiceProjectProvisioningReceipt, type AgentGitServiceProjectProvisioningResult, type ProvisionAgentGitServiceProjectAgentOptions } from "../agent-git-service-provisioning.js";
 import { projectMetadataDefaultSkills, projectTemplateContractStatus, readProjectTemplateMetadata, seedProjectTemplate, updateProjectTemplateContract, updateProjectTemplateDefaultSkills, updateProjectTemplateRunPolicy, type ProjectTemplateContract, type ProjectTemplateContractStatus, type ProjectTemplateMetadata, type ProjectTemplateName, type ProjectTemplateRunPolicy } from "../project-templates.js";
-import { RunRequestBody, QueuedRun, ActiveRunSlot, RunPresenceEntry, StoredRunPresenceEntry, RunPresenceRegistry, RUN_PRESENCE_TTL_MS, activeRunCollaboratorSummary, queuedRunPositions, readRunStatesForListing, isRunSummaryState, createAgent, runPresetName, presenceClientId, presenceLabel, presenceFocus, persistPresenceEntry, refreshRunPresenceFromDisk, refreshPresenceDirectory, purgeExpiredRunPresence, publicRunPresenceEntry, readPresenceJson } from "./runs.js";
-import { HarnessWorkspaceContext, ActiveWorkspaceSession, WorkspaceSessionSummary, WorkspaceCommandSummary, workspaceDirectoryUsageBytes, activeWorkspaceSessionDetails, readWorkspaceCommandSummaries, readWorkspaceSessionSummaries, workspaceDiff, workspaceInfo, workspaceSessionActivityAt, compactWorkspaceSessionSummary, listWorkspaceTenantNames } from "./workspace.js";
+import { RunRequestBody, QueuedRun, ActiveRunSlot, RunPresenceEntry, StoredRunPresenceEntry, RunPresenceRegistry, RUN_PRESENCE_TTL_MS, activeRunCollaboratorSummary, queuedRunPositions, readRunStatesForListing, isRunSummaryState, runPresetName, presenceClientId, presenceLabel, presenceFocus, persistPresenceEntry, refreshRunPresenceFromDisk, refreshPresenceDirectory, purgeExpiredRunPresence, publicRunPresenceEntry, readPresenceJson } from "./runs.js";
+import { HarnessWorkspaceContext, ActiveWorkspaceSession, WorkspaceSessionSummary, WorkspaceCommandSummary, workspaceDirectoryUsageBytes, readWorkspaceCommandSummaries, readWorkspaceSessionSummaries, workspaceDiff, workspaceInfo, workspaceSessionActivityAt, listWorkspaceTenantNames } from "./workspace.js";
 import { ProjectHumanGateRunSummary, projectHumanGateRunSummary, reviewClaimField } from "./gates.js";
 import { ActiveRunResourceStatus, HarnessProfileReadiness, QueuedRunResourceStatus, activeRunResourceStatuses, statusActiveRunDetails, queuedRunResourceStatus, controlPlaneProviderName, publicControlPlaneBaseUrl, upsertTenantControlPlaneIdentity, controlPlaneProviderNameField } from "./status.js";
 import { VAS_LITE_REVIEW_PRESET, vasLiteReviewPresetInput, readVasLiteProjectReadiness } from "./vas.js";
@@ -44,7 +44,6 @@ async function readAgentGitServiceProjectProvisionJson(req: IncomingMessage): Pr
 async function readAgentGitServiceProvisioningPlanApplyJson(req: IncomingMessage): Promise<AgentGitServiceProvisioningPlanApplyRequestBody> {
   return readJsonBody<AgentGitServiceProvisioningPlanApplyRequestBody>(req);
 }
-
 
 interface AgentGitServiceProjectProvisionRequestBody {
   repo?: unknown;
@@ -460,33 +459,6 @@ interface ProjectActivitySummary {
   workspaceConflictCount?: number;
   latestWorkspaceConflict?: ProjectWorkspaceActivitySummary;
   latestControlActivity?: ProjectControlActivitySummary;
-}
-
-function activeProjectWorkspaceSessionCount(activeSessions: Map<string, ActiveWorkspaceSession>, tenant: string, project: string): number {
-  return [...activeSessions.values()].filter((session) =>
-    session.status === "running" && session.context.tenant === tenant && session.context.project === project
-  ).length;
-}
-
-function activeProjectWorkspaceSessionDetails(
-  activeSessions: Map<string, ActiveWorkspaceSession>,
-  tenant: string,
-  project: string,
-): WorkspaceSessionSummary[] {
-  return [...activeSessions.values()]
-    .filter((session) => session.status === "running" && session.context.tenant === tenant && session.context.project === project)
-    .map((session) => compactWorkspaceSessionSummary({ ...session.summary, status: session.status }))
-    .sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.sessionId.localeCompare(b.sessionId));
-}
-
-function activeProjectWorkspaceSessionSummary(
-  activeSessions: Map<string, ActiveWorkspaceSession>,
-  tenant: string,
-  project: string,
-): Partial<Pick<ProjectSummary, "activeWorkspaceSessionDetails">> {
-  const sessions = activeProjectWorkspaceSessionDetails(activeSessions, tenant, project);
-  if (!sessions.length) return {};
-  return { activeWorkspaceSessionDetails: sessions };
 }
 
 async function readActiveProjectWorkspaceSessionDetails(
@@ -2271,9 +2243,8 @@ async function readProjectSummary(
   const sourceDefaults = await readProjectSourceDefaults(tenantRoot, project);
   const vasReadiness = metadata?.template === "vas-lite" ? await readVasLiteProjectReadiness(projectRoot, tenant, project) : {};
   const workspaceUsage = await projectWorkspaceUsageSummary(projectRoot, policyLimits);
-  let entries;
   try {
-    entries = await readdir(runsRoot, { withFileTypes: true });
+    await readdir(runsRoot, { withFileTypes: true });
   } catch (error) {
     if (isNotFound(error)) return compactProjectSummary({ project, runCount: 0, template, ...defaultSkills, ...runPolicy, ...contract, ...contractStatus, ...workspaceUsage, ...sourceDefaults, ...vasReadiness });
     throw error;

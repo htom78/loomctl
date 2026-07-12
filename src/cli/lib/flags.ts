@@ -6,10 +6,10 @@ import { type ProjectTemplateName } from "../../harness/project-templates.js";
 import { type ControlPlaneProviderName } from "../../harness/server.js";
 import { assertTenantName } from "../../tenant.js";
 import { cfg } from "./context.js";
-import { controlPlaneTokenEnv } from "./reporters.js";
+
 import { mkdirSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 
 export const CONTROL_PLANE_PROVIDER_HELP = `control-plane provider: ${SERVE_CONTROL_PLANE_PROVIDERS.join("|")}`;
 

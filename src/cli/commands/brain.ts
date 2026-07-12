@@ -3,9 +3,8 @@ import { controlPlaneProviderAdapter } from "../../harness/control-plane-registr
 import { registerBrainBenchmarkCommand } from "../brain-benchmark.js";
 import { cfg } from "../lib/context.js";
 import { parsePositiveIntFlag, parsePositiveNumberFlag } from "../lib/flags.js";
-import { pullRequestBody } from "../lib/reporters.js";
+
 import { Command } from "commander";
-import { join, resolve } from "node:path";
 
 export function registerBrainCommands(program: Command): void {
 const brain = program.command("brain").description("skill-evolution brain (git-backed)");

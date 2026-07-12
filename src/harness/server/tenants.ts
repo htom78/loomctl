@@ -14,7 +14,7 @@ import { brainFailureKindForSummary } from "../../brain-evidence.js";
 import { assertTenantName } from "../../tenant.js";
 import { HarnessConcurrencyAdmissionStatus } from "./admission.js";
 import { QueuedRun, ActiveRunSlot, RunCreateIdempotencyStatus, RunPresenceRegistry, readRunStatesForListing, runEvidenceUrl } from "./runs.js";
-import { RunWorkspaceIsolation, ActiveWorkspaceSession, WorkspaceSessionSummary, activeWorkspaceSessionDetails, runWorkspaceIsolation } from "./workspace.js";
+import { RunWorkspaceIsolation, ActiveWorkspaceSession, WorkspaceSessionSummary } from "./workspace.js";
 import { HarnessControlPlaneStatus, SanitizedTenantControlPlaneIdentity, ActiveRunResourceStatus, HarnessVisionLock, HarnessServerStatus, HarnessProfileReadiness, HarnessStateBackendStatus, HarnessIdentityStatus, QueuedRunResourceStatus, OrphanedRunningRunResourceStatus, harnessTenantServerStatus, harnessControlPlaneStatus, controlPlaneProviderName, tenantControlPlaneIdentityKey } from "./status.js";
 import { ProjectSummary, agentGitServiceProjectAgentsReadinessForProvider, readTenantProjectSummariesWithActivity, readProjectSummary, requireProjectName, listTenantProjectNames } from "./projects.js";
 import { HarnessServerOptions, ControlPlaneProviderName, TenantExecutorLimits } from "./types.js";
@@ -43,7 +43,6 @@ async function readTenantPolicyEscalationDecisionJson(req: IncomingMessage): Pro
 async function readTenantControlPlaneBackupManifestJson(req: IncomingMessage): Promise<unknown> {
   return readJsonBody<unknown>(req);
 }
-
 
 export interface TenantControlPlaneIdentity {
   provider: string;

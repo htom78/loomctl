@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, unlink } from "node:fs/promises";
 import { type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, join, resolve } from "node:path";
 import { createAgentWithSetupSteps, createCommandAgent, createScriptedAgentFromSteps, type AgentStep, type HarnessAgent } from "../agents.js";
@@ -13,8 +13,8 @@ import { ensureProjectTemplateMetadata, projectMetadataDefaultSkills, readProjec
 import { StateConflictError } from "../storage/contracts.js";
 import { RunAdmissionClaimHandle, QueuedRunAdmission, runHeartbeatIntervalMs, runningRunStatusWithLease, refreshRunningRunLease, runningRunIsStale, tryAcquireActiveRunAdmission, startRunAdmissionClaimHeartbeat, runAdmissionHeartbeatError, persistedRunningRunHasActiveAdmissionClaim, queuedAdmissionTenantActiveRunLimit, queuedAdmissionProjectActiveWorkspace, queuedAdmissionPersistedRunningRun, queuedAdmissionAuditData } from "./admission.js";
 import { workspaceExecutor, activeRunWorkspaceKey, runWorkspacesAreIsolated } from "./workspace.js";
-import { InitialIssueCommentEventsResult, RunHandoffFollowupEvidence, issueCommentSyncContextForOptions, appendInitialIssueCommentSyncAuditEvent, applyProjectContractStatusGate, initialIssueCommentEventsForRun, reviewDecision } from "./gates.js";
-import { queuedRunResourceStatus, controlPlaneIssueUrl, controlPlaneProviderName, publicUrl } from "./status.js";
+import { InitialIssueCommentEventsResult, RunHandoffFollowupEvidence, issueCommentSyncContextForOptions, appendInitialIssueCommentSyncAuditEvent, applyProjectContractStatusGate, initialIssueCommentEventsForRun } from "./gates.js";
+import { queuedRunResourceStatus, controlPlaneIssueUrl, controlPlaneProviderName } from "./status.js";
 import { VasLiteReviewPresetInput, VAS_LITE_REVIEW_PRESET, VAS_LITE_REVIEW_VERIFY_COMMANDS, requireVasLiteProject, vasLiteReviewPresetInput, readVasLiteCase, listVasLiteLearnings, vasLiteReviewGuidance, vasLiteReviewGoal, vasLiteReviewScript, vasLiteReviewContextStep } from "./vas.js";
 import { ProjectSummary, readProjectSummary, ProjectSourceDefaultValues, applyProjectRunPolicy, readProjectContractEvidence, readProjectContractStatusEvidence, readProjectSourceDefaults, runProjectQuery, listTenantProjectNames, isProjectDirectoryName, runPresenceRootFromProjectRoot, projectPresenceKey, projectPresenceEntries, projectModelUsageRequesterKey, projectModelUsageRequesterLabel, projectContractPatchField } from "./projects.js";
 import { TenantAccess, effectiveTenantAllowedTools, tenantRoleField, readTenantPolicy, tenantPolicyRole, requireTenantAccess, isSafeTenantDirectoryName, isTenantRole, brainSignalAuditData } from "./tenants.js";
@@ -69,7 +69,6 @@ async function readRunResumeJson(req: IncomingMessage): Promise<RunResumeRequest
 async function readPresenceJson(req: IncomingMessage): Promise<PresenceRequestBody> {
   return readJsonBody<PresenceRequestBody>(req);
 }
-
 
 interface RunRequestBody {
   tenant?: unknown;
