@@ -56,10 +56,13 @@ jobs:
           test "${#debs[@]}" -eq 1
           sudo dpkg -i "${debs[0]}"
           test -x /usr/bin/loom-desktop
+          rg -q '^Exec=loom-desktop %u$' '/usr/share/applications/Loom Desktop.desktop'
       - name: Run installed-app workflow
         shell: bash
         run: |
           dbus-run-session -- bash -euo pipefail -c '
+            xdg-mime default "Loom Desktop.desktop" x-scheme-handler/loom
+            test "$(xdg-mime query default x-scheme-handler/loom)" = "Loom Desktop.desktop"
             eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
             export LOOM_DESKTOP_E2E_BINARY=/usr/bin/loom-desktop
             xvfb-run --auto-servernum npm run desktop:e2e
