@@ -13,6 +13,9 @@
 - **共享控制面** —— 默认 Gitea/Forgejo 看板,`agent-git-service` 为候选 provider,中心 LiteLLM 模型网关。
 - **技能自演化 brain** —— 抓 run 信号、给技能打分、开 git-backed 改进 PR。
 
+已批准但尚未实现的工作统一记录在 [`TODO.md`](TODO.md),其中包括基于
+Tauri 的 Loom Desktop 客户端分阶段路线。
+
 ## 核心保证
 
 - 事件溯源的 run 历史:`.loom/runs/<runId>/events.jsonl`,人类可检查、可回放;每个 run 单调序列、原子 append。

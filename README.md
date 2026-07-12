@@ -19,6 +19,9 @@ The platform shape:
 - **Skill-evolution brain** — capture run signals, score skills, and open
   git-backed improvement PRs.
 
+Approved future work is tracked in [`TODO.md`](TODO.md), including the staged
+Tauri-based Loom Desktop client roadmap.
+
 ## Core guarantees
 
 - Event-sourced run history under `.loom/runs/<runId>/events.jsonl` that humans
