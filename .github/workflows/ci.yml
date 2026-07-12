@@ -67,7 +67,7 @@ jobs:
       - run: npm run web:build --workspace @loom/desktop
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: Build Linux AppImage and deb packages
-        run: npm run tauri --workspace @loom/desktop -- build --bundles appimage,deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        run: npm run tauri --workspace @loom/desktop -- build --ci --bundles appimage,deb --config '{"bundle":{"createUpdaterArtifacts":false}}'
       - name: Verify Linux packages and startup
         run: scripts/verify-linux-desktop-packages.sh
       - uses: actions/upload-artifact@v7

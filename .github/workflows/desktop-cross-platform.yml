@@ -24,12 +24,16 @@ jobs:
             linux: true
           - os: macos-15
             target: aarch64-apple-darwin
+            bundles: app,dmg
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            bundles: app,dmg
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            bundles: nsis
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
+            bundles: nsis
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
@@ -52,4 +56,31 @@ jobs:
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --target ${{ matrix.target }}
       - run: npm run web:build --workspace @loom/desktop
       - name: Build native desktop binary
+        if: matrix.linux
         run: npm run tauri --workspace @loom/desktop -- build --no-bundle --target ${{ matrix.target }}
+      - name: Build unsigned desktop package
+        if: ${{ !matrix.linux }}
+        env:
+          CI: "true"
+        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Verify macOS app and DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apps=(apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app)
+          dmgs=(apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#apps[@]}" -eq 1 && test -d "${apps[0]}"
+          test "${#dmgs[@]}" -eq 1 && test -s "${dmgs[0]}"
+      - name: Verify Windows NSIS installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis" -Filter *.exe -File
+          if ($installers.Count -ne 1 -or $installers[0].Length -eq 0) { throw "Expected one non-empty NSIS installer" }
+      - uses: actions/upload-artifact@v7
+        if: ${{ !matrix.linux }}
+        with:
+          name: loom-desktop-${{ matrix.target }}-unsigned
+          path: apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**
+          if-no-files-found: error

@@ -138,15 +138,20 @@ Estimated effort: 3-5 person-weeks.
 - [ ] Add Windows code signing and x64/arm64 installers.
       The native runner matrix, certificate import, and Authenticode checks are
       ready; a Windows code-signing certificate and a real release are still required.
-- [ ] Add Linux AppImage/deb builds after macOS and Windows are stable.
+- [x] Add Linux AppImage/deb builds and startup smoke tests. CI validates package
+      metadata, extracts the AppImage, keeps it running under Xvfb, and uploads
+      both packages ([run 29194779541](https://github.com/htom78/loomctl/actions/runs/29194779541)).
+- [ ] Publish Linux release artifacts after macOS and Windows signing gates are
+      stable. Linux remains an explicit opt-in on the release workflow.
 - [ ] Add cross-platform end-to-end tests for login, SSE reconnect, terminal,
       review gate, update verification, and credential persistence.
       Cross-platform contract tests and native release builds pass on macOS
       ARM/Intel, Windows ARM/x64, and Linux; installed-app OIDC, keychain
       persistence, and signed-update E2E remain release gates.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
-      The `tauri-apps/tauri-action@v1` workflow is ready but no signed release
-      may be published until the platform signing secrets pass preflight.
+      The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
+      it only after every requested platform verification passes, but no signed
+      release may be published until the platform signing secrets pass preflight.
 
 Acceptance gate:
 

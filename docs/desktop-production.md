@@ -33,8 +33,9 @@ desktop-beta-v0.1.0
 desktop-stable-v0.1.0
 ```
 
-After every platform job passes its native signature check, the promotion job
-updates the rolling `desktop-beta` or `desktop-stable` release with:
+Platform jobs upload into a draft immutable release. After every requested job
+passes its native package/signature check, the promotion job publishes that
+release and updates the rolling `desktop-beta` or `desktop-stable` release with:
 
 - `latest.json`: current signed updater manifest;
 - `rollback-latest.json`: previous signed updater manifest, when available;
@@ -70,9 +71,10 @@ It does not publish unsigned fallback installers.
 ## Verification gates
 
 Repository CI runs the production frontend build, Rust security tests, and a
-native no-bundle Tauri build on Linux. The cross-platform workflow repeats the
-desktop API golden path, profile persistence tests, Rust tests, and native build
-on macOS ARM/Intel, Windows ARM/x64, and Linux.
+Linux AppImage/deb build. It validates package metadata, extracts and starts the
+AppImage under Xvfb, and uploads both packages as a workflow artifact. The
+cross-platform workflow repeats the desktop API golden path, profile persistence
+tests, Rust tests, and native build on macOS ARM/Intel, Windows ARM/x64, and Linux.
 
 Release jobs additionally require:
 
