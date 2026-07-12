@@ -4,6 +4,8 @@ use tauri::{AppHandle, State};
 use tauri_plugin_updater::{Update, UpdaterExt};
 use url::Url;
 
+const MAX_ROLLBACK_METADATA_BYTES: usize = 32 * 1024;
+
 #[derive(Default)]
 pub struct UpdateState {
     pending: Mutex<Option<Update>>,
@@ -116,17 +118,40 @@ pub async fn rollback_metadata(channel: String) -> Result<RollbackMetadata, Stri
         .send()
         .await
         .map_err(|_| "rollback metadata request failed")?;
-    if !response.status().is_success() || response.content_length().unwrap_or(0) > 32 * 1024 {
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|length| length > MAX_ROLLBACK_METADATA_BYTES as u64)
+    {
         return Err("rollback metadata is unavailable".into());
     }
-    let metadata = response
-        .json::<RollbackMetadata>()
-        .await
+    let body = read_bounded_response_body(response).await?;
+    let metadata = serde_json::from_slice::<RollbackMetadata>(&body)
         .map_err(|_| "rollback metadata is invalid")?;
     if metadata.schema_version != "loom-desktop-rollback/v1" || metadata.channel != channel {
         return Err("rollback metadata does not match the selected channel".into());
     }
     Ok(metadata)
+}
+
+async fn read_bounded_response_body(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "rollback metadata request failed")?
+    {
+        append_bounded_chunk(&mut body, &chunk)?;
+    }
+    Ok(body)
+}
+
+fn append_bounded_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), String> {
+    if chunk.len() > MAX_ROLLBACK_METADATA_BYTES.saturating_sub(body.len()) {
+        return Err("rollback metadata is unavailable".into());
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 fn channel_url(channel: &str, file: &str) -> Result<Url, String> {
@@ -200,6 +225,14 @@ mod tests {
         assert!(channel_url("stable", "rollback-latest.json").is_ok());
         assert!(is_older_version("1.9.0", "1.10.0"));
         assert!(!is_older_version("invalid", "1.10.0"));
+    }
+
+    #[test]
+    fn rollback_metadata_body_is_bounded_without_content_length() {
+        let mut body = Vec::new();
+        append_bounded_chunk(&mut body, &vec![0; MAX_ROLLBACK_METADATA_BYTES])
+            .expect("exact limit");
+        assert!(append_bounded_chunk(&mut body, &[0]).is_err());
     }
 
     #[cfg(feature = "e2e")]
