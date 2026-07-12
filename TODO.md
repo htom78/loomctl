@@ -101,10 +101,11 @@ Acceptance gate:
 - [ ] A developer can complete the golden path from sign-in to reviewed PR
       without using the embedded browser Dashboard.
 - [x] Closing/restarting the client preserves profiles but does not expose
-      credentials in files, WebView storage, logs, or diagnostics. The Linux
-      installed-deb E2E restarts the native process, reconnects from persisted
-      profile metadata, and reads the token from the OS credential store
-      ([run 29200854687](https://github.com/htom78/loomctl/actions/runs/29200854687)).
+      credentials in files, WebView storage, logs, or diagnostics. Installed
+      deb, `.app`, and NSIS E2E runs restart the native process, reconnect from
+      persisted profile metadata, and read the token from the OS credential
+      store on Linux, macOS ARM/Intel, and Windows x64/ARM
+      ([run 29203147902](https://github.com/htom78/loomctl/actions/runs/29203147902)).
 
 ## Phase 2 - Development Workbench
 
@@ -158,16 +159,15 @@ Estimated effort: 3-5 person-weeks.
       stable. Linux remains an explicit opt-in on the release workflow.
 - [ ] Add cross-platform end-to-end tests for login, SSE reconnect, terminal,
       review gate, update verification, and credential persistence.
-      The feature-gated WebdriverIO/Tauri harness builds and installs a Linux
-      deb, exercises real OIDC PKCE/deep-link login, SSE reconnect, review,
-      terminal, and keyring persistence against deterministic fixtures, and
-      verifies that production bundles exclude WebDriver instrumentation.
-      Cross-platform contract tests, native builds, and unsigned package builds
-      pass on macOS ARM/Intel, Windows ARM/x64, and Linux. The Linux
-      installed-app workflow passes
-      ([run 29200854687](https://github.com/htom78/loomctl/actions/runs/29200854687));
-      macOS/Windows installed-app coverage and signed update installation and
-      rollback E2E remain release gates.
+      The feature-gated WebdriverIO/Tauri harness installs a Linux deb, macOS
+      `.app`, and Windows NSIS package, then exercises real OIDC PKCE through
+      each operating system's `loom://` handler, SSE reconnect, review,
+      terminal, and credential-store persistence against deterministic
+      fixtures. Linux, macOS ARM/Intel, and Windows x64/ARM installed-app jobs
+      pass
+      ([run 29203147902](https://github.com/htom78/loomctl/actions/runs/29203147902)),
+      and normal production bundles exclude WebDriver instrumentation. Signed
+      update installation and rollback E2E remain release gates.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
       The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
       it only after every requested platform verification passes, but no signed
