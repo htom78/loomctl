@@ -184,6 +184,12 @@ Estimated effort: 3-5 person-weeks.
       The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
       it only after every requested platform verification passes, but no signed
       release may be published until the platform signing secrets pass preflight.
+- [x] Make release manifest assembly and channel promotion fail closed. Official
+      Tauri action jobs merge `latest.json` serially, and the finalizer verifies
+      the exact version, required platform targets, non-empty signatures, and
+      same-release artifact/signature IDs before publishing. Promotion rejects
+      channel/tag/version drift and removes stale rollback manifests on an
+      idempotent re-promotion.
 
 Acceptance gate:
 

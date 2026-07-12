@@ -80,6 +80,7 @@ jobs:
     needs: create-draft
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - os: macos-15
@@ -210,8 +211,17 @@ jobs:
         if: ${{ needs.desktop.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') }}
         shell: bash
         run: |
+          set -euo pipefail
+          release_id="${{ needs.create-draft.outputs.release_id }}"
           tag="${{ needs.create-draft.outputs.tag }}"
+          version=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
+          cleanup_draft() {
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          }
+          trap cleanup_draft ERR
+          node scripts/verify-desktop-release.mjs "$release_id" "$tag" "$version" "${{ inputs.include_linux }}"
+          trap - ERR
           prerelease=false
           if test "${{ inputs.channel }}" = beta; then prerelease=true; fi
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${{ needs.create-draft.outputs.release_id }}" -F draft=false -F prerelease="$prerelease" >/dev/null
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" -F draft=false -F prerelease="$prerelease" >/dev/null
           node scripts/promote-desktop-release.mjs "${{ inputs.channel }}" "$tag"

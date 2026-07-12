@@ -34,10 +34,12 @@ desktop-stable-v0.1.0
 ```
 
 A dedicated job creates one draft immutable release and passes its release ID
-to every platform job, avoiding concurrent release-creation races. After every
-requested job passes its native package/signature check, the finalizer publishes
-that release and updates the rolling `desktop-beta` or `desktop-stable` release
-with:
+to every platform job, avoiding concurrent release-creation races. Platform
+jobs run the official Tauri action serially because the action merges updater
+platforms by reading, replacing, and uploading the shared `latest.json` asset.
+After every requested job passes its native package/signature check, the
+finalizer publishes that release and updates the rolling `desktop-beta` or
+`desktop-stable` release with:
 
 - `latest.json`: current signed updater manifest;
 - `rollback-latest.json`: previous signed updater manifest, when available;
@@ -116,10 +118,15 @@ Release jobs additionally require:
   validation;
 - Windows `Get-AuthenticodeSignature` returning `Valid` for every installer;
 - updater artifacts signed by the repository updater key;
+- a complete updater manifest whose version matches the immutable release and
+  whose macOS ARM/Intel and Windows ARM/x64 entries reference artifact and
+  signature asset IDs from that same release (plus Linux when requested);
 - successful channel promotion only after all requested platform jobs pass.
 
-If any platform verification fails, the finalizer deletes the draft instead of
-publishing a partial release.
+If any platform or updater-manifest verification fails, the finalizer deletes
+the draft instead of publishing a partial release. Channel promotion also
+rejects channel/tag/version drift and removes a stale `rollback-latest.json`
+when the same version is promoted idempotently.
 
 Final production acceptance is intentionally not inferred from CI. Install the
 published artifacts on clean machines, run the normal `npm run

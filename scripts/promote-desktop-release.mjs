@@ -3,12 +3,16 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  buildRollbackMetadata,
+  promotionVersion,
+  staleRollbackAssets,
+  validateUpdaterManifestStructure,
+} from "./desktop-release-lib.mjs";
 
 const channel = process.argv[2];
 const versionTag = process.argv[3];
-if (!(["stable", "beta"].includes(channel)) || !/^desktop-(stable|beta)-v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(versionTag)) {
-  throw new Error("usage: promote-desktop-release.mjs <stable|beta> <desktop-channel-vVERSION>");
-}
+const expectedVersion = promotionVersion(channel, versionTag);
 
 const rollingTag = `desktop-${channel}`;
 const work = mkdtempSync(join(tmpdir(), "loom-desktop-promotion-"));
@@ -25,26 +29,16 @@ if (!releaseExists(rollingTag)) {
 }
 
 let previous;
-if (releaseAssets(rollingTag).includes("latest.json")) {
+const rollingAssets = releaseAssets(rollingTag);
+if (rollingAssets.includes("latest.json")) {
   run("gh", ["release", "download", rollingTag, "--pattern", "latest.json", "--dir", previousDir]);
   previous = JSON.parse(readFileSync(join(previousDir, "latest.json"), "utf8"));
+  validateUpdaterManifestStructure(previous);
 }
 const next = JSON.parse(readFileSync(join(nextDir, "latest.json"), "utf8"));
-if (typeof next.version !== "string" || !next.platforms || typeof next.platforms !== "object") {
-  throw new Error("version release contains an invalid updater manifest");
-}
+validateUpdaterManifestStructure(next, expectedVersion);
 
-const rollback = {
-  schemaVersion: "loom-desktop-rollback/v1",
-  channel,
-  currentVersion: next.version,
-  currentTag: versionTag,
-  previousVersion: typeof previous?.version === "string" && previous.version !== next.version ? previous.version : undefined,
-  previousTag: typeof previous?.version === "string" && previous.version !== next.version
-    ? `desktop-${channel}-v${previous.version}`
-    : undefined,
-  publishedAt: new Date().toISOString(),
-};
+const rollback = buildRollbackMetadata(channel, versionTag, next, previous);
 const rollbackPath = join(nextDir, "rollback.json");
 writeFileSync(rollbackPath, `${JSON.stringify(rollback, null, 2)}\n`, "utf8");
 if (rollback.previousVersion) {
@@ -53,6 +47,9 @@ if (rollback.previousVersion) {
 
 const assets = [join(nextDir, "latest.json"), rollbackPath];
 if (rollback.previousVersion) assets.push(join(nextDir, "rollback-latest.json"));
+for (const asset of staleRollbackAssets(rollingAssets, rollback)) {
+  run("gh", ["release", "delete-asset", rollingTag, asset, "--yes"]);
+}
 run("gh", ["release", "upload", rollingTag, ...assets, "--clobber"]);
 process.stdout.write(`${JSON.stringify(rollback)}\n`);
 
