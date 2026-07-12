@@ -21,6 +21,7 @@
     "staging:down": "docker compose -f deploy/staging/compose.yml down",
     "production:check": "npm run build && node scripts/production-check.mjs",
     "soak": "LOOM_SOAK=1 node --expose-gc --import tsx --test tests/soak.test.ts",
+    "build:frontend": "node scripts/build-frontend.mjs",
     "desktop:dev": "npm run api:build && npm run dev --workspace @loom/desktop",
     "desktop:build": "npm run api:build && npm run build --workspace @loom/desktop",
     "desktop:bundle": "npm run api:build && npm run bundle --workspace @loom/desktop",
