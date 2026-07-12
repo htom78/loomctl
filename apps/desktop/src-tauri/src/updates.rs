@@ -77,7 +77,7 @@ pub async fn check_update(
 }
 
 #[tauri::command]
-pub async fn install_update(state: State<'_, UpdateState>) -> Result<bool, String> {
+pub async fn install_update(app: AppHandle, state: State<'_, UpdateState>) -> Result<bool, String> {
     let update = state
         .pending
         .lock()
@@ -90,7 +90,18 @@ pub async fn install_update(state: State<'_, UpdateState>) -> Result<bool, Strin
         .download_and_install(|_, _| {}, || {})
         .await
         .map_err(|_| "signed update installation failed")?;
+    relaunch_after_install(app);
     Ok(true)
+}
+
+fn relaunch_after_install(app: AppHandle) {
+    #[cfg(not(windows))]
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(250));
+        app.restart();
+    });
+    #[cfg(windows)]
+    drop(app);
 }
 
 #[tauri::command]
