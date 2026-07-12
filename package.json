@@ -16,6 +16,7 @@
     "staging:smoke": "node scripts/staging-two-instance.mjs",
     "staging:down": "docker compose -f deploy/staging/compose.yml down",
     "production:check": "npm run build && node scripts/production-check.mjs",
+    "soak": "LOOM_SOAK=1 node --expose-gc --import tsx --test tests/soak.test.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {

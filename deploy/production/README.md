@@ -95,5 +95,11 @@ you need a tighter recovery point.
 - **Monitoring**: alert rules ship in
   [`../observability/loom-alerts.yml`](../observability/loom-alerts.yml); wire a
   Prometheus scrape of `/metrics` (admin-token gated) and Grafana yourself.
+- **Soak / load gate**: `npm run soak` drives a live instance with sustained
+  concurrent mixed load and fails on any 5xx, any cross-tenant read, or runaway
+  memory. Default run is short; before a real cutover run a long one against the
+  staging instance: `LOOM_SOAK=1 SOAK_DURATION_MS=120000 SOAK_CONCURRENCY=32
+  node --expose-gc --import tsx --test tests/soak.test.ts`.
 - **Not yet proven in a real environment** (do not skip before real production):
-  non-loopback external staging, Coder runtime isolation, and a soak/load test.
+  non-loopback external staging and Coder runtime isolation — both need a real
+  host / real Coder and cannot be validated from the repo.
