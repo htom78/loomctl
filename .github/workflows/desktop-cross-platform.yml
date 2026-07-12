@@ -46,6 +46,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: npm ci
       - run: npm run build
+      - run: npm run api:build
       - name: Run desktop API golden-path tests
         run: npx tsx --test --test-concurrency=1 tests/desktop-profile.test.ts tests/loom-api.test.ts tests/loom-api-phase2.test.ts
       - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --target ${{ matrix.target }}
