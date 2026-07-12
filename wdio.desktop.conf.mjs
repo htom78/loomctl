@@ -25,7 +25,7 @@ export const config = {
   outputDir: ".codex-tmp/wdio",
   logLevel: "info",
   waitforTimeout: 15_000,
-  connectionRetryTimeout: 90_000,
-  connectionRetryCount: 2,
-  jasmineOpts: { defaultTimeoutInterval: 120_000 },
+  connectionRetryTimeout: Number(process.env.LOOM_DESKTOP_E2E_CONNECTION_RETRY_TIMEOUT_MS ?? 90_000),
+  connectionRetryCount: Number(process.env.LOOM_DESKTOP_E2E_CONNECTION_RETRY_COUNT ?? 2),
+  jasmineOpts: { defaultTimeoutInterval: Number(process.env.LOOM_DESKTOP_E2E_TIMEOUT_MS ?? 120_000) },
 };

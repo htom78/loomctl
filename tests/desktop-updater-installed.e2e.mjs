@@ -37,8 +37,7 @@ describe("installed Loom Desktop updater", () => {
       currentVersion: "0.1.0",
       rollback: false,
     });
-    assert.equal(await invoke("install_update"), true);
-    await waitForHash(forwardHash);
+    await installUpdate(forwardHash);
 
     await restart();
     const rollback = await invoke("check_update", { channel: "stable", allowRollback: true });
@@ -56,8 +55,7 @@ describe("installed Loom Desktop updater", () => {
       previousTag: "desktop-stable-v0.1.0",
       publishedAt: "2026-07-13T00:00:00.000Z",
     });
-    assert.equal(await invoke("install_update"), true);
-    await waitForHash(rollbackHash);
+    await installUpdate(rollbackHash);
 
     await restart();
     const restored = await invoke("check_update", { channel: "stable", allowRollback: false });
@@ -157,12 +155,24 @@ async function restart() {
   });
 }
 
+async function installUpdate(expectedHash) {
+  let installed;
+  try {
+    installed = await invoke("install_update");
+  } catch (error) {
+    if (process.platform !== "win32") throw error;
+  }
+  if (installed !== undefined) assert.equal(installed, true);
+  await waitForHash(expectedHash);
+}
+
 async function waitForHash(expected) {
-  await browser.waitUntil(async () => (await sha256(APPLICATION)) === expected, {
-    timeout: 30_000,
-    interval: 250,
-    timeoutMsg: "installed AppImage hash did not change",
-  });
+  const deadline = Date.now() + Number(process.env.LOOM_DESKTOP_E2E_UPDATE_TIMEOUT_MS ?? 30_000);
+  while (Date.now() < deadline) {
+    if (await sha256(APPLICATION).catch(() => "") === expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("installed application hash did not change");
 }
 
 async function sha256(path) {

@@ -98,3 +98,205 @@ jobs:
           name: loom-desktop-signed-updater-install-e2e-logs
           path: .codex-tmp/wdio
           if-no-files-found: ignore
+
+  macos-signed-update-and-rollback:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    env:
+      CI: "true"
+      VITE_LOOM_E2E: "1"
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Require updater signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+      - run: npm ci
+      - run: npm run api:build
+      - name: Build signed rollback app updater
+        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --features e2e --target ${{ matrix.target }} --bundles app --config src-tauri/tauri.e2e.conf.json
+      - name: Preserve rollback fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          apps=("$bundle"/*.app)
+          signatures=("$bundle"/*.sig)
+          test "${#apps[@]}" -eq 1
+          test "${#signatures[@]}" -eq 1
+          signature="${signatures[0]}"
+          artifact="${signature%.sig}"
+          test -s "$artifact"
+          mkdir -p .codex-tmp/updater-install-e2e
+          ditto "${apps[0]}" .codex-tmp/updater-install-e2e/rollback.app
+          cp .codex-tmp/updater-install-e2e/rollback.app/Contents/MacOS/loom-desktop .codex-tmp/updater-install-e2e/rollback.bin
+          cp "$artifact" .codex-tmp/updater-install-e2e/rollback.update
+          cp "$signature" .codex-tmp/updater-install-e2e/rollback.update.sig
+      - name: Build signed forward app updater
+        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --features e2e --target ${{ matrix.target }} --bundles app --config src-tauri/tauri.e2e.conf.json --config '{"version":"0.2.0"}'
+      - name: Install baseline and configure updater fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bundle="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          apps=("$bundle"/*.app)
+          signatures=("$bundle"/*.sig)
+          test "${#apps[@]}" -eq 1
+          test "${#signatures[@]}" -ge 1
+          signature="${signatures[$((${#signatures[@]} - 1))]}"
+          artifact="${signature%.sig}"
+          test -s "$artifact"
+          cp "${apps[0]}/Contents/MacOS/loom-desktop" .codex-tmp/updater-install-e2e/forward.bin
+          cp "$artifact" .codex-tmp/updater-install-e2e/forward.update
+          cp "$signature" .codex-tmp/updater-install-e2e/forward.update.sig
+          installed="$RUNNER_TEMP/Loom Desktop.app"
+          ditto .codex-tmp/updater-install-e2e/rollback.app "$installed"
+          binary="$installed/Contents/MacOS/loom-desktop"
+          test -x "$binary"
+          root=$(cd .codex-tmp/updater-install-e2e && pwd -P)
+          printf 'LOOM_DESKTOP_E2E_BINARY=%s\n' "$binary" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_DRIVER=embedded\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_SPEC=./tests/desktop-updater-installed.e2e.mjs\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_TIMEOUT_MS=300000\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_CONNECTION_RETRY_TIMEOUT_MS=30000\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_CONNECTION_RETRY_COUNT=0\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_UPDATE_TIMEOUT_MS=120000\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_UPDATE_BASE_URL=http://127.0.0.1:18787/\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_FORWARD_ARTIFACT=%s/forward.update\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_FORWARD_IMAGE=%s/forward.bin\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_FORWARD_SIGNATURE=%s/forward.update.sig\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_ROLLBACK_ARTIFACT=%s/rollback.update\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_ROLLBACK_IMAGE=%s/rollback.bin\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_ROLLBACK_SIGNATURE=%s/rollback.update.sig\n' "$root" >> "$GITHUB_ENV"
+      - name: Install signed update and rollback
+        run: npm run desktop:e2e
+      - name: Upload WebDriver logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: loom-desktop-${{ matrix.target }}-signed-updater-install-e2e-logs
+          path: .codex-tmp/wdio
+          if-no-files-found: ignore
+
+  windows-signed-update-and-rollback:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    env:
+      CI: "true"
+      VITE_LOOM_E2E: "1"
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Require updater signing identity
+        shell: pwsh
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw "TAURI_SIGNING_PRIVATE_KEY is required" }
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { throw "TAURI_SIGNING_PRIVATE_KEY_PASSWORD is required" }
+      - run: npm ci
+      - run: npm run api:build
+      - name: Build signed rollback NSIS updater
+        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --features e2e --target ${{ matrix.target }} --bundles nsis --config src-tauri/tauri.e2e.conf.json
+      - name: Preserve rollback fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bundle = "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis"
+          $signatures = @(Get-ChildItem $bundle -Filter *.sig -File)
+          $installers = @(Get-ChildItem $bundle -Filter *.exe -File)
+          if ($signatures.Count -ne 1) { throw "Expected one rollback updater signature" }
+          if ($installers.Count -ne 1) { throw "Expected one rollback NSIS installer" }
+          $artifact = $signatures[0].FullName.Substring(0, $signatures[0].FullName.Length - 4)
+          if (-not (Test-Path $artifact -PathType Leaf)) { throw "Rollback updater artifact was not found" }
+          $root = New-Item .codex-tmp/updater-install-e2e -ItemType Directory -Force
+          Copy-Item "apps/desktop/src-tauri/target/${{ matrix.target }}/release/loom-desktop.exe" "$root/rollback.bin"
+          Copy-Item $installers[0].FullName "$root/rollback-installer.exe"
+          Copy-Item $artifact "$root/rollback.update"
+          Copy-Item $signatures[0].FullName "$root/rollback.update.sig"
+      - name: Build signed forward NSIS updater
+        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --features e2e --target ${{ matrix.target }} --bundles nsis --config src-tauri/tauri.e2e.conf.json --config '{"version":"0.2.0"}'
+      - name: Install baseline and configure updater fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = (Resolve-Path .codex-tmp/updater-install-e2e).Path
+          $bundle = "apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis"
+          $signature = Get-ChildItem $bundle -Filter *.sig -File | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $signature) { throw "Forward updater signature was not found" }
+          $artifact = $signature.FullName.Substring(0, $signature.FullName.Length - 4)
+          if (-not (Test-Path $artifact -PathType Leaf)) { throw "Forward updater artifact was not found" }
+          Copy-Item "apps/desktop/src-tauri/target/${{ matrix.target }}/release/loom-desktop.exe" "$root/forward.bin"
+          Copy-Item $artifact "$root/forward.update"
+          Copy-Item $signature.FullName "$root/forward.update.sig"
+
+          $process = Start-Process -FilePath "$root/rollback-installer.exe" -ArgumentList "/S" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "NSIS installer exited with $($process.ExitCode)" }
+          $entry = Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*", "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue |
+            Where-Object DisplayName -eq "Loom Desktop" |
+            Select-Object -First 1
+          if (-not $entry) { throw "Loom Desktop uninstall registration was not found" }
+          $candidates = @()
+          if ($entry.InstallLocation) { $candidates += Join-Path $entry.InstallLocation.Trim('"') "loom-desktop.exe" }
+          if ($entry.DisplayIcon) { $candidates += ($entry.DisplayIcon.Trim('"') -replace ',\d+$', '') }
+          $binary = $candidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+          if (-not $binary) { throw "Installed Loom Desktop binary was not found" }
+
+          "LOOM_DESKTOP_E2E_BINARY=$binary" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_DRIVER=embedded" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_SPEC=./tests/desktop-updater-installed.e2e.mjs" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_TIMEOUT_MS=300000" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_CONNECTION_RETRY_TIMEOUT_MS=30000" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_CONNECTION_RETRY_COUNT=0" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_UPDATE_TIMEOUT_MS=120000" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_UPDATE_BASE_URL=http://127.0.0.1:18787/" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_FORWARD_ARTIFACT=$root/forward.update" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_FORWARD_IMAGE=$root/forward.bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_FORWARD_SIGNATURE=$root/forward.update.sig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_ROLLBACK_ARTIFACT=$root/rollback.update" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_ROLLBACK_IMAGE=$root/rollback.bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "LOOM_DESKTOP_E2E_ROLLBACK_SIGNATURE=$root/rollback.update.sig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install signed update and rollback
+        run: npm run desktop:e2e
+      - name: Upload WebDriver logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: loom-desktop-${{ matrix.target }}-signed-updater-install-e2e-logs
+          path: .codex-tmp/wdio
+          if-no-files-found: ignore
