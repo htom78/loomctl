@@ -1,9 +1,10 @@
 import { readdirSync, type Dirent } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { type IncomingMessage } from "node:http";
 import { type TenantRole } from "../audit.js";
 import { formatPrometheusMetrics, type StateBackendHealthSnapshot } from "../server-observability.js";
-import { tenantApiKeyIsActive, type OidcHealthSnapshot } from "../server-auth.js";
+import { tenantApiKeyIsActive, tenantApiKeyMatches, type OidcHealthSnapshot, type TenantApiKey } from "../server-auth.js";
 import { type QueuedRunBlockedReason, type QueuedRunConcurrencySummary } from "../run-state.js";
 import { CONTROL_PLANE_PROVIDER_BOUNDARY, controlPlaneProviderCatalogEntry, type ControlPlaneProvider, type ControlPlaneProviderAdoptionStage, type ControlPlaneProviderBoundary, type ControlPlaneProviderCatalogName } from "../control-plane.js";
 import { controlPlaneProviderAdapter as resolveControlPlaneProviderAdapter } from "../control-plane-registry.js";
@@ -13,9 +14,9 @@ import { HarnessConcurrencyAdmissionStatus, runLeaseTtlMs, runningRunIsStale, ac
 import { QueuedRun, ActiveRunSlot, RunCreateIdempotencyStatus, QueueRecoveryAudit, StaleRunCleanupAudit, tenantActiveRunLimit, effectiveTenantActiveRunLimit, activeTenantRunIds, queuedTenantRunCount, queuedRunPositions, isSafePersistedRunState, listPersistedRunDirs, findBlockingPersistedRunningRun, readRunStateForScan, activeRunKey, runCreateIdempotencyStatus } from "./runs.js";
 import { RunWorkspaceIsolation, ActiveWorkspaceSession, WorkspaceSessionSummary, WORKSPACE_FILE_READ_LIMIT_BYTES, WORKSPACE_FILE_WRITE_LIMIT_BYTES, WORKSPACE_OUTPUT_LIMIT_BYTES, WORKSPACE_SESSION_INPUT_LIMIT_BYTES, DEFAULT_MAX_WORKSPACE_SESSIONS, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, workspaceCommandTimeoutMs, workspaceSessionIdleTimeoutMs, activeWorkspaceSessionDetails, statusActiveWorkspaceSessionDetails, listWorkspaceTenantNames, activeRunWorkspaceKey, activeRunWorkspaceLeaseKey, runWorkspaceIsolation } from "./workspace.js";
 import { agentGitServiceProjectAgentsReadiness, readProjectSummary, listTenantProjectNames } from "./projects.js";
-import { TenantControlPlaneIdentity, TenantPolicy, TenantPolicyChange, TenantHarnessServerStatus, effectiveTenantAllowedTools, readTenantPolicySync, readTenantPolicy, writeTenantPolicy, tenantPolicyFromUnknown, tenantPolicyReplacementChange, isSafeTenantDirectoryName } from "./tenants.js";
+import { TenantControlPlaneIdentity, TenantPolicy, TenantPolicyChange, TenantHarnessServerStatus, TenantAccess, effectiveTenantAllowedTools, readTenantPolicySync, readTenantPolicy, writeTenantPolicy, tenantPolicyFromUnknown, tenantPolicyReplacementChange, isSafeTenantDirectoryName, requireTenantRole, tenantRoleRank } from "./tenants.js";
 import { HarnessServerOptions, ControlPlaneProviderName, ControlPlaneAgentIdentityMode, HTTP_JSON_BODY_LIMIT_BYTES } from "./types.js";
-import { compactObject, policyStatusAccessKeys, isNotFound, startedAt } from "./shared.js";
+import { compactObject, isNotFound, startedAt, bearerToken, headerValue, streamQueryToken, unauthorized } from "./shared.js";
 
 
 interface HarnessControlPlaneStatus {
@@ -1491,4 +1492,84 @@ function tenantControlPlaneIdentityKey(identity: SanitizedTenantControlPlaneIden
   return `${identity.provider}\0${identity.externalActor}\0${identity.actor}\0${identity.role}`;
 }
 
-export { HarnessControlPlaneStatus, SanitizedTenantControlPlaneIdentity, ActiveRunResourceStatus, HarnessVisionLock, HarnessServerStatus, HarnessProfileReadiness, HarnessStateBackendStatus, HarnessIdentityStatus, QueuedRunResourceStatus, OrphanedRunningRunResourceStatus, activeRunResourceStatuses, statusActiveRunDetails, queuedRunResourceStatus, harnessServerStatus, harnessTenantServerStatus, harnessControlPlaneStatus, controlPlaneProviderName, controlPlaneIssueUrl, publicControlPlaneBaseUrl, publicUrl, requireSafeLocalExecutorOptions, serverHealth, serverReadiness, serverMetrics, upsertTenantControlPlaneIdentity, controlPlaneProviderNameField, tenantControlPlaneIdentityKey };
+async function requireServerStatusAccess(
+  req: IncomingMessage,
+  options: HarnessServerOptions,
+  url?: URL,
+): Promise<TenantAccess | undefined> {
+  const keys = serverStatusAccessKeys(options);
+  const oidc = options.oidcAuthenticator;
+  if (keys.length === 0 && !oidc) return undefined;
+
+  const headerCredential =
+    bearerToken(req.headers.authorization) ??
+    headerValue(req.headers["x-loom-tenant-token"]);
+  const provided = headerCredential ?? streamQueryToken(url);
+  const matches = keys
+    .filter((key) => tenantApiKeyMatches(key, provided))
+    .sort((a, b) => tenantRoleRank(b.role) - tenantRoleRank(a.role));
+  const key = matches[0];
+  if (key) {
+    const access = { actor: key.actor, role: key.role };
+    requireTenantRole(access, "admin");
+    return access;
+  }
+
+  // OIDC identities are deliberately NOT accepted here. Every OidcAccess is
+  // scoped to exactly one tenant (server-auth enforces a resolved tenant claim),
+  // so an OIDC "admin" is a tenant administrator, never a platform operator.
+  // The cross-tenant /status and /metrics views are an operator surface; a
+  // single-tenant admin JWT must not read every other tenant's runs and host
+  // paths. Platform operators authenticate to these endpoints with a key the
+  // operator configured at startup (--tenant-token / --tenant-key). OIDC admins
+  // retain full access to their own /tenants/:tenant/status.
+  throw unauthorized("invalid tenant token");
+}
+
+// The cross-tenant /status and /metrics views are a platform-operator surface.
+// Only keys the operator configured at startup (--tenant-token / --tenant-key)
+// count as operator credentials. Policy-backed keys are created by tenants
+// themselves through POST /tenants/:tenant/policy/api-keys and must never grant
+// platform-wide visibility, or any tenant's self-issued admin key would read
+// every other tenant's runs, goals, and host paths.
+function serverStatusAccessKeys(options: HarnessServerOptions): TenantApiKey[] {
+  const legacyKeys = Object.entries(options.tenantTokens ?? {})
+    .filter(([tenant]) => isSafeTenantDirectoryName(tenant))
+    .map(([, token]) => ({
+      token,
+      actor: "legacy-token",
+      role: "admin" as const,
+    }));
+  const configuredKeys = Object.entries(options.tenantApiKeys ?? {})
+    .filter(([tenant]) => isSafeTenantDirectoryName(tenant))
+    .flatMap(([, keys]) => keys);
+  return [...legacyKeys, ...configuredKeys];
+}
+
+async function policyStatusAccessKeys(workspaceRoot: string, options: HarnessServerOptions): Promise<TenantApiKey[]> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(workspaceRoot, { withFileTypes: true });
+  } catch (error) {
+    if (isNotFound(error)) entries = [];
+    else throw error;
+  }
+
+  const keys: TenantApiKey[] = [];
+  const storedTenants = new Set<string>();
+  for (const document of await options.stateBackend?.documents.list<unknown>("tenant-policy") ?? []) {
+    if (!isSafeTenantDirectoryName(document.key)) continue;
+    storedTenants.add(document.key);
+    keys.push(...(tenantPolicyFromUnknown(document.value).apiKeys ?? []));
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (!isSafeTenantDirectoryName(entry.name)) continue;
+    if (storedTenants.has(entry.name)) continue;
+    const policy = await readTenantPolicy(workspaceRoot, entry.name, options);
+    keys.push(...(policy?.apiKeys ?? []));
+  }
+  return keys;
+}
+
+export { HarnessControlPlaneStatus, SanitizedTenantControlPlaneIdentity, ActiveRunResourceStatus, HarnessVisionLock, HarnessServerStatus, HarnessProfileReadiness, HarnessStateBackendStatus, HarnessIdentityStatus, QueuedRunResourceStatus, OrphanedRunningRunResourceStatus, activeRunResourceStatuses, statusActiveRunDetails, queuedRunResourceStatus, harnessServerStatus, harnessTenantServerStatus, harnessControlPlaneStatus, controlPlaneProviderName, controlPlaneIssueUrl, publicControlPlaneBaseUrl, publicUrl, requireSafeLocalExecutorOptions, serverHealth, serverReadiness, serverMetrics, upsertTenantControlPlaneIdentity, controlPlaneProviderNameField, tenantControlPlaneIdentityKey, requireServerStatusAccess };

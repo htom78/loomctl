@@ -7,7 +7,6 @@ import { appendRunEvent } from "../run-store.js";
 import type { DeploymentGate, ReviewGate, RunRequesterSummary, RunSummary } from "../events.js";
 import { formatRunRequesterSummary, parseGiteaIssueRef } from "../gitea.js";
 import { readAgentGitServiceProjectProvisioningReceipt } from "../agent-git-service-provisioning.js";
-import { safeGitRef } from "../git-ref.js";
 import { WORKSPACE_GIT_DIFF_COMMAND } from "../git-diff.js";
 import { createWorkspaceGitCommit } from "../git-commit.js";
 import { createLocalExecutor, type CommandResult, type WorkspaceExecutor, type WorkspaceExecutionOptions, type WorkspaceDescription, type WorkspaceFileEntry, type WorkspacePathInfo, type WorkspaceSession } from "../executor.js";
@@ -18,7 +17,7 @@ import { controlPlaneIssueUrl } from "./status.js";
 import { ProjectSummary, projectWorkspaceSessionRoot, projectWorkspaceCommandRoot, readTenantProjectSummariesWithActivity, requireProjectExists, ProjectSourceDefaultValues, readProjectSourceDefaults, readAgentGitServiceAgentTokenSecret, projectWorkspaceContext, listTenantProjectNames, isProjectDirectoryName, refreshProjectPresenceFromDisk, projectPresenceEntries } from "./projects.js";
 import { TenantExecutorLimits, TenantAccess, effectiveTenantExecutorLimits, effectiveTenantExecutorTemplateParameters, requireTenantTool, readTenantPolicy, requireTenantAccess, isSafeTenantDirectoryName } from "./tenants.js";
 import { HarnessServerOptions, PullRequestReporterResult, WorkspacePullRequestRequest, RunWorkspaceIsolation, HarnessWorkspaceContext } from "./types.js";
-import { markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, compactObject, compactMetadata, seqAfter, recordData, stringField, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, isSafeDirectoryName, booleanFlag, positiveIntValue, badRequest, payloadTooLarge, conflict, notFound, writeJson, isNotFound, startedAt, readJsonBody } from "./shared.js";
+import { markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, compactObject, compactMetadata, seqAfter, recordData, stringField, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, isSafeDirectoryName, booleanFlag, positiveIntValue, badRequest, payloadTooLarge, conflict, notFound, writeJson, isNotFound, startedAt, readJsonBody, workspacePullRequestRef } from "./shared.js";
 
 async function readWorkspaceFileJson(req: IncomingMessage): Promise<WorkspaceFileWriteRequestBody> {
   return readJsonBody<WorkspaceFileWriteRequestBody>(req);
@@ -1016,19 +1015,6 @@ function workspacePullRequestIssue(value: unknown, fallback?: string): string {
 
 function workspacePullRequestIssueUrl(issue: string, options: HarnessServerOptions): string | undefined {
   return controlPlaneIssueUrl(options, issue);
-}
-
-function workspacePullRequestRef(value: unknown, fallback: string | undefined, field: string, optional = false): string | undefined {
-  const ref = (optionalString(value, field) ?? fallback)?.trim();
-  if (!ref) {
-    if (optional) return undefined;
-    throw badRequest(`${field} is required.`);
-  }
-  try {
-    return safeGitRef(ref, field);
-  } catch {
-    throw badRequest(`${field} is not a safe git ref.`);
-  }
 }
 
 function requiredWorkspacePullRequestRef(value: unknown, fallback: string | undefined, field: string): string {
@@ -3020,4 +3006,4 @@ function activeWorkspaceKey(tenant: string, project: string, runId?: string): st
 }
 
 export type { RunWorkspaceIsolation, HarnessWorkspaceContext } from "./types.js";
-export { WorkspaceFileWriteRequestBody, WorkspaceFileMoveRequestBody, WorkspaceCommandRequestBody, WorkspaceCommitRequestBody, WorkspacePullRequestRequestBody, WorkspaceSessionRequestBody, WorkspaceSessionInputRequestBody, WorkspaceClientRequestBody, ActiveWorkspaceSession, WorkspaceSessionSummary, WorkspaceCommandSummary, WorkspaceCommandResponse, WorkspaceInfo, WORKSPACE_FILE_READ_LIMIT_BYTES, WORKSPACE_FILE_WRITE_LIMIT_BYTES, WORKSPACE_OUTPUT_LIMIT_BYTES, WORKSPACE_SESSION_INPUT_LIMIT_BYTES, DEFAULT_MAX_WORKSPACE_SESSIONS, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, workspaceCommandTimeoutMs, workspaceSessionIdleTimeoutMs, workspaceDirectoryUsageBytes, activeWorkspaceSessionDetails, statusActiveWorkspaceSessionDetails, handleRunWorkspaceCommand, handleRunScopedWorkspaceCommand, handleCreateWorkspaceCommit, handleCreateRunWorkspaceCommit, handleCreateWorkspacePullRequest, handleCreateRunWorkspacePullRequest, workspacePullRequestRef, handleListWorkspaceCommands, handleListRunWorkspaceCommands, handleCreateWorkspaceSession, handleCreateRunWorkspaceSession, handleListWorkspaceSessions, handleListRunWorkspaceSessions, handleWriteWorkspaceSessionInput, handleStopWorkspaceSession, handleReadWorkspaceSessionEvents, clearWorkspaceSessionIdleTimer, runWorkspaceSessionRoot, runWorkspaceCommandRoot, readWorkspaceCommandSummaries, readWorkspaceSessionSummaries, handleWriteWorkspaceFile, handleWriteRunWorkspaceFile, handleDeleteWorkspaceFile, handleMoveWorkspaceFile, handleMoveRunWorkspaceFile, handleDeleteRunWorkspaceFile, handleReadRunWorkspaceInfo, handleReadRunWorkspaceDiff, workspaceDiff, workspaceInfo, handleReadWorkspaceFile, handleReadRunWorkspaceFile, handleListTenantWorkspaceUsageWarnings, workspaceSessionActivityAt, workspaceExecutor, runWorkspaceContext, compactWorkspaceSessionSummary, workspaceDiffChangedFiles, listWorkspaceTenantNames, activeRunWorkspaceKey, activeRunWorkspaceLeaseKey, runWorkspacesAreIsolated, runWorkspaceIsolation };
+export { WorkspaceFileWriteRequestBody, WorkspaceFileMoveRequestBody, WorkspaceCommandRequestBody, WorkspaceCommitRequestBody, WorkspacePullRequestRequestBody, WorkspaceSessionRequestBody, WorkspaceSessionInputRequestBody, WorkspaceClientRequestBody, ActiveWorkspaceSession, WorkspaceSessionSummary, WorkspaceCommandSummary, WorkspaceCommandResponse, WorkspaceInfo, WORKSPACE_FILE_READ_LIMIT_BYTES, WORKSPACE_FILE_WRITE_LIMIT_BYTES, WORKSPACE_OUTPUT_LIMIT_BYTES, WORKSPACE_SESSION_INPUT_LIMIT_BYTES, DEFAULT_MAX_WORKSPACE_SESSIONS, workspaceSessionLimit, tenantWorkspaceSessionLimit, effectiveTenantWorkspaceSessionLimit, workspaceCommandTimeoutMs, workspaceSessionIdleTimeoutMs, workspaceDirectoryUsageBytes, activeWorkspaceSessionDetails, statusActiveWorkspaceSessionDetails, handleRunWorkspaceCommand, handleRunScopedWorkspaceCommand, handleCreateWorkspaceCommit, handleCreateRunWorkspaceCommit, handleCreateWorkspacePullRequest, handleCreateRunWorkspacePullRequest, handleListWorkspaceCommands, handleListRunWorkspaceCommands, handleCreateWorkspaceSession, handleCreateRunWorkspaceSession, handleListWorkspaceSessions, handleListRunWorkspaceSessions, handleWriteWorkspaceSessionInput, handleStopWorkspaceSession, handleReadWorkspaceSessionEvents, clearWorkspaceSessionIdleTimer, runWorkspaceSessionRoot, runWorkspaceCommandRoot, readWorkspaceCommandSummaries, readWorkspaceSessionSummaries, handleWriteWorkspaceFile, handleWriteRunWorkspaceFile, handleDeleteWorkspaceFile, handleMoveWorkspaceFile, handleMoveRunWorkspaceFile, handleDeleteRunWorkspaceFile, handleReadRunWorkspaceInfo, handleReadRunWorkspaceDiff, workspaceDiff, workspaceInfo, handleReadWorkspaceFile, handleReadRunWorkspaceFile, handleListTenantWorkspaceUsageWarnings, workspaceSessionActivityAt, workspaceExecutor, runWorkspaceContext, compactWorkspaceSessionSummary, workspaceDiffChangedFiles, listWorkspaceTenantNames, activeRunWorkspaceKey, activeRunWorkspaceLeaseKey, runWorkspacesAreIsolated, runWorkspaceIsolation };

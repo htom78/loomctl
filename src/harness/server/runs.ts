@@ -14,12 +14,12 @@ import { StateConflictError } from "../storage/contracts.js";
 import { RunAdmissionClaimHandle, QueuedRunAdmission, runHeartbeatIntervalMs, runningRunStatusWithLease, refreshRunningRunLease, runningRunIsStale, tryAcquireActiveRunAdmission, startRunAdmissionClaimHeartbeat, runAdmissionHeartbeatError, persistedRunningRunHasActiveAdmissionClaim, queuedAdmissionTenantActiveRunLimit, queuedAdmissionProjectActiveWorkspace, queuedAdmissionPersistedRunningRun, queuedAdmissionAuditData } from "./admission.js";
 import { workspaceExecutor, activeRunWorkspaceKey, runWorkspacesAreIsolated } from "./workspace.js";
 import { InitialIssueCommentEventsResult, RunHandoffFollowupEvidence, issueCommentSyncContextForOptions, appendInitialIssueCommentSyncAuditEvent, applyProjectContractStatusGate, initialIssueCommentEventsForRun, reviewDecision } from "./gates.js";
-import { queuedRunResourceStatus, controlPlaneIssueUrl, publicUrl } from "./status.js";
+import { queuedRunResourceStatus, controlPlaneIssueUrl, controlPlaneProviderName, publicUrl } from "./status.js";
 import { VasLiteReviewPresetInput, VAS_LITE_REVIEW_PRESET, VAS_LITE_REVIEW_VERIFY_COMMANDS, requireVasLiteProject, vasLiteReviewPresetInput, readVasLiteCase, listVasLiteLearnings, vasLiteReviewGuidance, vasLiteReviewGoal, vasLiteReviewScript, vasLiteReviewContextStep } from "./vas.js";
-import { ProjectSummary, readProjectSummary, ProjectSourceDefaultValues, applyProjectRunPolicy, readProjectContractEvidence, readProjectContractStatusEvidence, readProjectSourceDefaults, runProjectQuery, listTenantProjectNames, isProjectDirectoryName, runPresenceRootFromProjectRoot, projectPresenceKey, projectPresenceEntries } from "./projects.js";
-import { TenantAccess, effectiveTenantAllowedTools, tenantRoleField, readTenantPolicy, tenantPolicyRole, requireTenantAccess, isSafeTenantDirectoryName, isTenantRole } from "./tenants.js";
+import { ProjectSummary, readProjectSummary, ProjectSourceDefaultValues, applyProjectRunPolicy, readProjectContractEvidence, readProjectContractStatusEvidence, readProjectSourceDefaults, runProjectQuery, listTenantProjectNames, isProjectDirectoryName, runPresenceRootFromProjectRoot, projectPresenceKey, projectPresenceEntries, projectModelUsageRequesterKey, projectModelUsageRequesterLabel, projectContractPatchField } from "./projects.js";
+import { TenantAccess, effectiveTenantAllowedTools, tenantRoleField, readTenantPolicy, tenantPolicyRole, requireTenantAccess, isSafeTenantDirectoryName, isTenantRole, brainSignalAuditData } from "./tenants.js";
 import { HarnessServerOptions } from "./types.js";
-import { CancelRequestBody, delay, enforceModelUsageTokenLimitsForBody, enforceModelUsageTokenLimits, hasRequestValue, hasExplicitAgent, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, compactMetadata, reportIssue, reportPullRequest, reportBrainIngest, writeJsonFileAtomic, seqAfter, filterEvents, boundedDiagnosticText, isSensitiveDiagnosticKey, replayEntryFromEvent, recordData, stringField, numberField, stringArrayField, readJson, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, optionalClientRequestId, isSafeDirectoryName, envNameValue, stringArray, allowedToolSubset, booleanFlag, positiveInt, badRequest, conflict, notFound, writeJson, isNotFound, isAlreadyExists, startedAt, readJsonBody } from "./shared.js";
+import { CancelRequestBody, delay, hasRequestValue, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, compactMetadata, writeJsonFileAtomic, seqAfter, filterEvents, boundedDiagnosticText, isSensitiveDiagnosticKey, recordData, stringField, booleanField, numberField, stringArrayField, replayText, requireSafeName, optionalSafeName, requireString, optionalString, optionalClientId, optionalClientRequestId, isSafeDirectoryName, envNameValue, stringArray, allowedToolSubset, booleanFlag, positiveInt, badRequest, conflict, notFound, writeJson, isNotFound, isAlreadyExists, startedAt, readJsonBody } from "./shared.js";
 
 async function streamEvents(res: ServerResponse, runDir: string, after: number, options: HarnessServerOptions): Promise<void> {
   res.writeHead(200, {
@@ -3298,6 +3298,296 @@ function publicRunPresenceEntry(entry: StoredRunPresenceEntry): RunPresenceEntry
   return publicEntry;
 }
 
+async function enforceModelUsageTokenLimitsForBody(
+  workspaceRoot: string,
+  options: HarnessServerOptions,
+  tenant: string,
+  project: string,
+  body: RunRequestBody,
+  requester: RunRequester | undefined,
+): Promise<void> {
+  if (runAgentMetadata(body, options).agentMode !== "model") return;
+  await enforceModelUsageTokenLimits(workspaceRoot, options, tenant, project, requester);
+}
+
+async function enforceModelUsageTokenLimits(
+  workspaceRoot: string,
+  options: HarnessServerOptions,
+  tenant: string,
+  project: string,
+  requester: RunRequester | undefined,
+): Promise<void> {
+  const policyLimits = (await readTenantPolicy(workspaceRoot, tenant, options))?.limits;
+  const projectTokenLimit = policyLimits?.modelProjectTotalTokenLimit;
+  const requesterTokenLimit = policyLimits?.modelRequesterTotalTokenLimit;
+  const projectCostLimit = policyLimits?.modelProjectCostUsdLimit;
+  const requesterCostLimit = policyLimits?.modelRequesterCostUsdLimit;
+  if (
+    projectTokenLimit === undefined &&
+    requesterTokenLimit === undefined &&
+    projectCostLimit === undefined &&
+    requesterCostLimit === undefined
+  ) return;
+
+  const summary = await readProjectSummary(join(workspaceRoot, tenant), tenant, project, policyLimits);
+  const projectTokens = summary.modelUsage?.totalTokens ?? 0;
+  if (projectTokenLimit !== undefined && projectTokens >= projectTokenLimit) {
+    throw conflict(`project model token limit exceeded: ${projectTokens} >= ${projectTokenLimit}`);
+  }
+  const projectCostUsd = summary.modelUsage?.costUsd ?? 0;
+  if (projectCostLimit !== undefined && projectCostUsd >= projectCostLimit) {
+    throw conflict(`project model cost limit exceeded: ${projectCostUsd} >= ${projectCostLimit}`);
+  }
+
+  if (requesterTokenLimit === undefined && requesterCostLimit === undefined) return;
+  const publicRequester = publicRunRequester(requester) ?? {};
+  const requesterKey = projectModelUsageRequesterKey(publicRequester);
+  const requesterUsage = (summary.modelUsageByRequester ?? [])
+    .find((entry) => projectModelUsageRequesterKey(entry.requester) === requesterKey);
+  const requesterTokens = requesterUsage?.totalTokens ?? 0;
+  if (requesterTokenLimit !== undefined && requesterTokens >= requesterTokenLimit) {
+    throw conflict(`requester model token limit exceeded for ${projectModelUsageRequesterLabel(publicRequester)}: ${requesterTokens} >= ${requesterTokenLimit}`);
+  }
+  const requesterCostUsd = requesterUsage?.costUsd ?? 0;
+  if (requesterCostLimit !== undefined && requesterCostUsd >= requesterCostLimit) {
+    throw conflict(`requester model cost limit exceeded for ${projectModelUsageRequesterLabel(publicRequester)}: ${requesterCostUsd} >= ${requesterCostLimit}`);
+  }
+}
+
+function hasExplicitAgent(body: RunRequestBody): boolean {
+  return body.script !== undefined || body.agentCommand !== undefined || body.model !== undefined;
+}
+
+async function reportIssue(options: HarnessServerOptions, summary: RunSummary): Promise<RunSummary> {
+  if (summary.status === "cancelled" || summary.status === "paused") return summary;
+  if (!summary.metadata?.issue || !options.issueReporter) return summary;
+  try {
+    await options.issueReporter(summary);
+    return recordRunExternalEffect(summary, {
+      kind: "issue_comment",
+      controlPlaneProvider: controlPlaneProviderName(options),
+      issue: summary.metadata.issue,
+      issueUrl: summary.metadata.issueUrl,
+      dashboardUrl: summary.metadata.dashboardUrl,
+      summaryUrl: summary.metadata.summaryUrl,
+      reviewSummaryUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "review-summary") : undefined,
+      handoffPackageUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "handoff-package") : undefined,
+      handoffFollowupsUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "handoff-runs") : undefined,
+    }, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return markRunError(summary, `issue reporter failed: ${message}`, options);
+  }
+}
+
+async function reportPullRequest(
+  options: HarnessServerOptions,
+  summary: RunSummary,
+  pullRequestRequested: boolean,
+): Promise<RunSummary> {
+  if (!pullRequestRequested || !options.pullRequestReporter) return summary;
+  if (summary.status !== "passed" && summary.status !== "review_required" && summary.status !== "deployment_required") return summary;
+  try {
+    const result = await options.pullRequestReporter(summary);
+    const withPullRequest = result ? {
+      ...summary,
+      metadata: {
+        ...summary.metadata,
+        pullRequestIndex: result.index,
+        pullRequestUrl: result.url,
+      },
+    } : summary;
+    return recordRunExternalEffect(withPullRequest, {
+      kind: "pull_request",
+      controlPlaneProvider: controlPlaneProviderName(options),
+      issue: withPullRequest.metadata?.issue,
+      issueUrl: withPullRequest.metadata?.issueUrl,
+      branch: withPullRequest.metadata?.branch,
+      baseBranch: withPullRequest.metadata?.baseBranch,
+      pullRequestIndex: withPullRequest.metadata?.pullRequestIndex,
+      pullRequestUrl: withPullRequest.metadata?.pullRequestUrl,
+      dashboardUrl: withPullRequest.metadata?.dashboardUrl,
+      summaryUrl: withPullRequest.metadata?.summaryUrl,
+      reviewSummaryUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "review-summary") : undefined,
+      handoffPackageUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "handoff-package") : undefined,
+      handoffFollowupsUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "handoff-runs") : undefined,
+    }, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return markRunError(summary, `pull request reporter failed: ${message}`, options);
+  }
+}
+
+async function reportBrainIngest(
+  options: HarnessServerOptions,
+  summary: RunSummary,
+  appendAuditEvent?: TenantAuditAppender,
+): Promise<RunSummary> {
+  if (!options.brainIngest || summary.status === "cancelled" || summary.status === "paused") return summary;
+  try {
+    await options.brainIngest(summary);
+    const data = brainSignalAuditData(summary);
+    if (appendAuditEvent && summary.metadata?.tenant) {
+      await appendAuditEvent(summary.metadata.tenant, "brain_signal_ingested", data);
+    }
+    return recordRunExternalEffect(summary, {
+      kind: "brain_ingest",
+      ...data,
+      skills: summary.skills,
+    }, options);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return markRunError(summary, `brain ingest failed: ${message}`, options);
+  }
+}
+
+async function readJson(req: IncomingMessage): Promise<RunRequestBody> {
+  return readJsonBody<RunRequestBody>(req);
+}
+
+function replayEntryFromEvent(event: HarnessEvent): RunReplayEntry {
+  const data = recordData(event.data);
+  return compactReplayEntry({
+    seq: event.seq,
+    ts: event.ts,
+    type: event.type,
+    title: replayTitle(event, data),
+    detail: replayDetail(data),
+    requester: runRequesterSummaryField(data, "requester"),
+    actor: stringField(data, "actor"),
+    role: tenantRoleField(data, "role"),
+    clientId: stringField(data, "clientId"),
+    toolName: stringField(data, "toolName"),
+    actionId: stringField(data, "actionId") ?? stringField(data, "id"),
+    ok: booleanField(data, "ok"),
+    status: stringField(data, "status"),
+    iteration: numberField(data, "iteration"),
+    actionCount: numberField(data, "actionCount"),
+    finishRequested: booleanField(data, "finishRequested"),
+    phase: stringField(data, "phase"),
+    plan: stringField(data, "plan"),
+    contractPatch: projectContractPatchField(data, "contractPatch"),
+    runReviewContractPatch: projectContractPatchField(data, "runReviewContractPatch"),
+  });
+}
+
+function replayTitle(event: HarnessEvent, data: Record<string, unknown>): string {
+  if (event.type === "user_message") return `User: ${replayText(data.content) ?? replayText(data.goal) ?? "message"}`;
+  if (event.type === "assistant_message") {
+    const iteration = numberField(data, "iteration");
+    return iteration === undefined ? "Assistant message" : `Assistant message ${iteration}`;
+  }
+  if (event.type === "action") return `Tool action: ${stringField(data, "toolName") ?? "unknown"}`;
+  if (event.type === "observation") {
+    const toolName = stringField(data, "toolName") ?? "unknown";
+    return `Observation: ${toolName} ${booleanField(data, "ok") === false ? "failed" : "passed"}`;
+  }
+  if (event.type === "verification") return `Verification ${booleanField(data, "ok") === false ? "failed" : "passed"}`;
+  if (event.type === "evaluation") return `Evaluation ${booleanField(data, "ok") === false ? "failed" : "passed"}`;
+  if (event.type === "reviewer") return `Reviewer ${booleanField(data, "ok") === false ? "flagged" : "passed"}`;
+  if (event.type === "finish") return `Finish: ${stringField(data, "status") ?? "unknown"}`;
+  if (event.type === "workspace_prepare") return `Workspace prepare: ${stringField(data, "status") ?? "unknown"}`;
+  if (event.type === "review_gate") return `Review: ${stringField(data, "status") ?? "unknown"}`;
+  if (event.type === "review_claim") return `Review claim: ${stringField(data, "action") ?? "unknown"}`;
+  if (event.type === "deployment_gate") return `Deployment: ${stringField(data, "status") ?? "unknown"}`;
+  if (event.type === "external_effect") return `External effect: ${stringField(data, "kind") ?? "unknown"}`;
+  if (event.type === "agent_retry") return `Agent retry: ${stringField(data, "kind") ?? "unknown"}`;
+  if (event.type === "model_usage") return `Model usage: ${stringField(data, "model") ?? stringField(data, "responseModel") ?? "unknown"}`;
+  if (event.type === "run_metadata") return "Run metadata";
+  if (event.type === "run_policy") return "Run policy";
+  if (event.type === "resume") return "Resume";
+  if (event.type === "pause") return "Pause";
+  if (event.type === "cancel") return "Cancel";
+  if (event.type === "error") return "Error";
+  return event.type;
+}
+
+function replayDetail(data: Record<string, unknown>): string | undefined {
+  const detail =
+    replayText(data.content) ??
+    replayText(data.message) ??
+    replayText(data.output) ??
+    replayText(data.error) ??
+    replayText(data.reason) ??
+    replayText(data.note) ??
+    undefined;
+  const plan = replayText(data.plan);
+  const retry = replayRetryDetail(data);
+  const modelUsage = replayModelUsageDetail(data);
+  const diagnostics = replayDiagnosticDetail(data);
+  const lines = [
+    detail,
+    plan ? `plan: ${plan}` : undefined,
+    retry,
+    modelUsage,
+    diagnostics,
+  ].filter((line): line is string => Boolean(line));
+  if (lines.length) return lines.join("\n");
+  return Object.keys(data).length ? replayText(JSON.stringify(data)) : undefined;
+}
+
+function replayDiagnosticDetail(data: Record<string, unknown>): string | undefined {
+  const kind = replayText(data.kind);
+  const details = replayDiagnosticDetails(data.details);
+  const lines = [
+    kind ? `kind=${kind}` : undefined,
+    details ? `details=${details}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+  return lines.length ? lines.join("\n") : undefined;
+}
+
+function replayModelUsageDetail(data: Record<string, unknown>): string | undefined {
+  const lines = [
+    stringField(data, "requestId") ? `requestId=${stringField(data, "requestId")}` : undefined,
+    stringField(data, "responseModel") ? `responseModel=${stringField(data, "responseModel")}` : undefined,
+    numberField(data, "promptTokens") === undefined ? undefined : `promptTokens=${numberField(data, "promptTokens")}`,
+    numberField(data, "completionTokens") === undefined ? undefined : `completionTokens=${numberField(data, "completionTokens")}`,
+    numberField(data, "totalTokens") === undefined ? undefined : `totalTokens=${numberField(data, "totalTokens")}`,
+    numberField(data, "costUsd") === undefined ? undefined : `costUsd=${numberField(data, "costUsd")}`,
+    numberField(data, "attempt") === undefined ? undefined : `attempt=${numberField(data, "attempt")}`,
+  ].filter((line): line is string => Boolean(line));
+  return lines.length ? lines.join("\n") : undefined;
+}
+
+function replayRetryDetail(data: Record<string, unknown>): string | undefined {
+  const attempt = numberField(data, "attempt");
+  const nextAttempt = numberField(data, "nextAttempt");
+  const lines = [
+    attempt === undefined ? undefined : `attempt=${attempt}`,
+    nextAttempt === undefined ? undefined : `nextAttempt=${nextAttempt}`,
+  ].filter((line): line is string => Boolean(line));
+  return lines.length ? lines.join("\n") : undefined;
+}
+
+function replayDiagnosticDetails(value: unknown): string | undefined {
+  const details = recordData(value);
+  // This detail renders into viewer-readable run replay and the tenant audit
+  // stream. Drop entries whose key names a secret and bound each value, matching
+  // the run-summary diagnostic filter, so an upstream error that echoes a token
+  // cannot leak through the diagnostic path.
+  const pairs = Object.entries(details)
+    .filter(([key]) => !isSensitiveDiagnosticKey(key))
+    .map(([key, entry]) => {
+      const rendered = replayDiagnosticValue(entry);
+      return rendered === undefined ? undefined : `${key}=${boundedDiagnosticText(rendered, 200)}`;
+    })
+    .filter((pair): pair is string => pair !== undefined);
+  return pairs.length ? replayText(pairs.join(" ")) : undefined;
+}
+
+function replayDiagnosticValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  // Drop nested objects/arrays rather than JSON.stringify them: a nested
+  // { token: ... } sitting under a non-sensitive top-level key would otherwise
+  // leak here. Mirrors publicRunErrorDetailValue in the run-summary path.
+  return undefined;
+}
+
+function compactReplayEntry(entry: RunReplayEntry): RunReplayEntry {
+  return Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined)) as RunReplayEntry;
+}
+
 function runCreateIdempotencyStatus(): RunCreateIdempotencyStatus {
   return {
     clientRequestId: true,
@@ -3308,4 +3598,4 @@ function runCreateIdempotencyStatus(): RunCreateIdempotencyStatus {
   };
 }
 
-export { RunRequestBody, RunPresetName, RunCommentRequestBody, RunResumeRequestBody, PresenceRequestBody, RunEventContext, LinkedIssueRun, InitialRunEvent, HarnessRunStart, QueuedRun, ActiveRun, ActiveRunSlot, RunCreateIdempotencyStatus, QueueRecoveryAudit, StaleRunCleanupAudit, RunReplay, RunEvidenceCheckpoint, RunReplayEntry, RunChangedFileHint, RunExternalEffectEvidence, RunPresenceEntry, StoredRunPresenceEntry, RunPresenceRegistry, RUN_PRESENCE_TTL_MS, RUN_PAUSE_REQUEST_FILE, RUN_CANCEL_REQUEST_FILE, RUN_CONTROL_POLL_INTERVAL_MS, DISTRIBUTED_RUN_QUEUE_POLL_MS, tenantActiveRunLimit, effectiveTenantActiveRunLimit, tenantRunCapacityScope, activeTenantRunCount, activeTenantRunIds, queuedTenantRunCount, activeRunCollaboratorSummary, queuedRunPositions, queuedRunConcurrencySummary, handleListRuns, handleCreateRun, createAsyncRunFromBody, drainQueuedRuns, recoverQueuedRuns, cleanupStaleRunningRuns, isSafePersistedRunState, listPersistedRunDirs, handleAbandonRun, handleCancelRun, handleResumeRun, resumePausedRun, handleCreateRunComment, handleUpdateRunPresence, handleListRunPresence, handleReadRun, readRunStatesForListing, readRunState, writeRunPauseRequest, findBlockingPersistedRunningRun, runEventContext, runRequester, publicRunRequester, runUrl, runDashboardUrl, runEvidenceUrl, recordRunExternalEffect, markRunError, recordRunError, writeRunSummary, writeRunStatus, runEvidenceCheckpoint, runReplayFromEvents, publicRunErrorSummary, isRunSummaryState, runExternalEffectEvidence, latestRunExternalEffect, runEvidencePath, runRequesterSummaryField, runChangedFileHintsField, shouldCloseRunEventStream, latestRunEvent, readRunEventsIfPresent, readRunStateIfPresent, readRunStateForScan, createAgent, runAgentMetadata, runPresetName, presenceClientId, linkedIssueRuns, presenceLabel, presenceFocus, activeRunKey, persistPresenceEntry, refreshRunPresenceFromDisk, refreshPresenceDirectory, purgeExpiredRunPresence, runPresenceEntries, publicRunPresenceEntry, runCreateIdempotencyStatus, readPresenceJson };
+export { RunRequestBody, RunPresetName, RunCommentRequestBody, RunResumeRequestBody, PresenceRequestBody, RunEventContext, LinkedIssueRun, InitialRunEvent, HarnessRunStart, QueuedRun, ActiveRun, ActiveRunSlot, RunCreateIdempotencyStatus, QueueRecoveryAudit, StaleRunCleanupAudit, RunReplay, RunEvidenceCheckpoint, RunReplayEntry, RunChangedFileHint, RunExternalEffectEvidence, RunPresenceEntry, StoredRunPresenceEntry, RunPresenceRegistry, RUN_PRESENCE_TTL_MS, RUN_PAUSE_REQUEST_FILE, RUN_CANCEL_REQUEST_FILE, RUN_CONTROL_POLL_INTERVAL_MS, DISTRIBUTED_RUN_QUEUE_POLL_MS, tenantActiveRunLimit, effectiveTenantActiveRunLimit, tenantRunCapacityScope, activeTenantRunCount, activeTenantRunIds, queuedTenantRunCount, activeRunCollaboratorSummary, queuedRunPositions, queuedRunConcurrencySummary, handleListRuns, handleCreateRun, createAsyncRunFromBody, drainQueuedRuns, recoverQueuedRuns, cleanupStaleRunningRuns, isSafePersistedRunState, listPersistedRunDirs, handleAbandonRun, handleCancelRun, handleResumeRun, resumePausedRun, handleCreateRunComment, handleUpdateRunPresence, handleListRunPresence, handleReadRun, readRunStatesForListing, readRunState, writeRunPauseRequest, findBlockingPersistedRunningRun, runEventContext, runRequester, publicRunRequester, runUrl, runDashboardUrl, runEvidenceUrl, recordRunExternalEffect, markRunError, recordRunError, writeRunSummary, writeRunStatus, runEvidenceCheckpoint, runReplayFromEvents, publicRunErrorSummary, isRunSummaryState, runExternalEffectEvidence, latestRunExternalEffect, runEvidencePath, runRequesterSummaryField, runChangedFileHintsField, shouldCloseRunEventStream, latestRunEvent, readRunEventsIfPresent, readRunStateIfPresent, readRunStateForScan, createAgent, runAgentMetadata, runPresetName, presenceClientId, linkedIssueRuns, presenceLabel, presenceFocus, activeRunKey, persistPresenceEntry, refreshRunPresenceFromDisk, refreshPresenceDirectory, purgeExpiredRunPresence, runPresenceEntries, publicRunPresenceEntry, runCreateIdempotencyStatus, readPresenceJson, readJson };

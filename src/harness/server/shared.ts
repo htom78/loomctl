@@ -1,20 +1,12 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { type Dirent } from "node:fs";
-import { readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { type IncomingMessage, type ServerResponse } from "node:http";
-import { join, resolve } from "node:path";
-import { type TenantAuditAppender, type TenantAuditEvent } from "../audit.js";
-import { type RunRequester } from "../loop.js";
-import { tenantApiKeyMatches, type TenantApiKey } from "../server-auth.js";
+import { type TenantAuditEvent } from "../audit.js";
 import { type QueuedRunStatus, type RunningRunStatus } from "../run-state.js";
 import type { HarnessEvent, RunMetadata, RunSummary } from "../events.js";
 import { parseGiteaIssueRef } from "../gitea.js";
-import { RunRequestBody, RunReplayEntry, publicRunRequester, runEvidenceUrl, recordRunExternalEffect, markRunError, runRequesterSummaryField, runAgentMetadata } from "./runs.js";
-import { workspacePullRequestRef } from "./workspace.js";
-import { controlPlaneProviderName } from "./status.js";
-import { projectModelUsageRequesterKey, projectModelUsageRequesterLabel, readProjectSummary, projectContractPatchField } from "./projects.js";
-import { TenantAccess, brainSignalAuditData, tenantRoleField, readTenantPolicy, tenantPolicyFromUnknown, isSafeTenantDirectoryName, requireTenantRole, tenantRoleRank } from "./tenants.js";
-import { HarnessServerOptions, HTTP_JSON_BODY_LIMIT_BYTES } from "./types.js";
+import { safeGitRef } from "../git-ref.js";
+import { HTTP_JSON_BODY_LIMIT_BYTES } from "./types.js";
 
 
 interface CancelRequestBody {
@@ -24,62 +16,6 @@ interface CancelRequestBody {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function enforceModelUsageTokenLimitsForBody(
-  workspaceRoot: string,
-  options: HarnessServerOptions,
-  tenant: string,
-  project: string,
-  body: RunRequestBody,
-  requester: RunRequester | undefined,
-): Promise<void> {
-  if (runAgentMetadata(body, options).agentMode !== "model") return;
-  await enforceModelUsageTokenLimits(workspaceRoot, options, tenant, project, requester);
-}
-
-async function enforceModelUsageTokenLimits(
-  workspaceRoot: string,
-  options: HarnessServerOptions,
-  tenant: string,
-  project: string,
-  requester: RunRequester | undefined,
-): Promise<void> {
-  const policyLimits = (await readTenantPolicy(workspaceRoot, tenant, options))?.limits;
-  const projectTokenLimit = policyLimits?.modelProjectTotalTokenLimit;
-  const requesterTokenLimit = policyLimits?.modelRequesterTotalTokenLimit;
-  const projectCostLimit = policyLimits?.modelProjectCostUsdLimit;
-  const requesterCostLimit = policyLimits?.modelRequesterCostUsdLimit;
-  if (
-    projectTokenLimit === undefined &&
-    requesterTokenLimit === undefined &&
-    projectCostLimit === undefined &&
-    requesterCostLimit === undefined
-  ) return;
-
-  const summary = await readProjectSummary(join(workspaceRoot, tenant), tenant, project, policyLimits);
-  const projectTokens = summary.modelUsage?.totalTokens ?? 0;
-  if (projectTokenLimit !== undefined && projectTokens >= projectTokenLimit) {
-    throw conflict(`project model token limit exceeded: ${projectTokens} >= ${projectTokenLimit}`);
-  }
-  const projectCostUsd = summary.modelUsage?.costUsd ?? 0;
-  if (projectCostLimit !== undefined && projectCostUsd >= projectCostLimit) {
-    throw conflict(`project model cost limit exceeded: ${projectCostUsd} >= ${projectCostLimit}`);
-  }
-
-  if (requesterTokenLimit === undefined && requesterCostLimit === undefined) return;
-  const publicRequester = publicRunRequester(requester) ?? {};
-  const requesterKey = projectModelUsageRequesterKey(publicRequester);
-  const requesterUsage = (summary.modelUsageByRequester ?? [])
-    .find((entry) => projectModelUsageRequesterKey(entry.requester) === requesterKey);
-  const requesterTokens = requesterUsage?.totalTokens ?? 0;
-  if (requesterTokenLimit !== undefined && requesterTokens >= requesterTokenLimit) {
-    throw conflict(`requester model token limit exceeded for ${projectModelUsageRequesterLabel(publicRequester)}: ${requesterTokens} >= ${requesterTokenLimit}`);
-  }
-  const requesterCostUsd = requesterUsage?.costUsd ?? 0;
-  if (requesterCostLimit !== undefined && requesterCostUsd >= requesterCostLimit) {
-    throw conflict(`requester model cost limit exceeded for ${projectModelUsageRequesterLabel(publicRequester)}: ${requesterCostUsd} >= ${requesterCostLimit}`);
-  }
 }
 
 function markdownInlineCode(value: string): string {
@@ -100,10 +36,6 @@ function optionalSessionEventRole(value: unknown): boolean {
 
 function hasRequestValue(value: unknown): boolean {
   return value !== undefined && value !== null && value !== "";
-}
-
-function hasExplicitAgent(body: RunRequestBody): boolean {
-  return body.script !== undefined || body.agentCommand !== undefined || body.model !== undefined;
 }
 
 function textArray(value: unknown, field: string): string[] {
@@ -160,6 +92,19 @@ function optionalSourceRepo(value: unknown, fallback?: string): string | undefin
   return repo;
 }
 
+function workspacePullRequestRef(value: unknown, fallback: string | undefined, field: string, optional = false): string | undefined {
+  const ref = (optionalString(value, field) ?? fallback)?.trim();
+  if (!ref) {
+    if (optional) return undefined;
+    throw badRequest(`${field} is required.`);
+  }
+  try {
+    return safeGitRef(ref, field);
+  } catch {
+    throw badRequest(`${field} is not a safe git ref.`);
+  }
+}
+
 function optionalSourceGitRef(value: unknown, field: "branch" | "baseBranch", fallback?: string): string | undefined {
   return workspacePullRequestRef(value, fallback, field, true);
 }
@@ -182,89 +127,6 @@ function compactObject<T extends Record<string, unknown>>(value: T): T {
 
 function compactMetadata(metadata: RunMetadata): RunMetadata {
   return Object.fromEntries(Object.entries(metadata).filter(([, value]) => value !== undefined)) as RunMetadata;
-}
-
-async function reportIssue(options: HarnessServerOptions, summary: RunSummary): Promise<RunSummary> {
-  if (summary.status === "cancelled" || summary.status === "paused") return summary;
-  if (!summary.metadata?.issue || !options.issueReporter) return summary;
-  try {
-    await options.issueReporter(summary);
-    return recordRunExternalEffect(summary, {
-      kind: "issue_comment",
-      controlPlaneProvider: controlPlaneProviderName(options),
-      issue: summary.metadata.issue,
-      issueUrl: summary.metadata.issueUrl,
-      dashboardUrl: summary.metadata.dashboardUrl,
-      summaryUrl: summary.metadata.summaryUrl,
-      reviewSummaryUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "review-summary") : undefined,
-      handoffPackageUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "handoff-package") : undefined,
-      handoffFollowupsUrl: summary.metadata.summaryUrl ? runEvidenceUrl(summary.metadata.summaryUrl, "handoff-runs") : undefined,
-    }, options);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return markRunError(summary, `issue reporter failed: ${message}`, options);
-  }
-}
-
-async function reportPullRequest(
-  options: HarnessServerOptions,
-  summary: RunSummary,
-  pullRequestRequested: boolean,
-): Promise<RunSummary> {
-  if (!pullRequestRequested || !options.pullRequestReporter) return summary;
-  if (summary.status !== "passed" && summary.status !== "review_required" && summary.status !== "deployment_required") return summary;
-  try {
-    const result = await options.pullRequestReporter(summary);
-    const withPullRequest = result ? {
-      ...summary,
-      metadata: {
-        ...summary.metadata,
-        pullRequestIndex: result.index,
-        pullRequestUrl: result.url,
-      },
-    } : summary;
-    return recordRunExternalEffect(withPullRequest, {
-      kind: "pull_request",
-      controlPlaneProvider: controlPlaneProviderName(options),
-      issue: withPullRequest.metadata?.issue,
-      issueUrl: withPullRequest.metadata?.issueUrl,
-      branch: withPullRequest.metadata?.branch,
-      baseBranch: withPullRequest.metadata?.baseBranch,
-      pullRequestIndex: withPullRequest.metadata?.pullRequestIndex,
-      pullRequestUrl: withPullRequest.metadata?.pullRequestUrl,
-      dashboardUrl: withPullRequest.metadata?.dashboardUrl,
-      summaryUrl: withPullRequest.metadata?.summaryUrl,
-      reviewSummaryUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "review-summary") : undefined,
-      handoffPackageUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "handoff-package") : undefined,
-      handoffFollowupsUrl: withPullRequest.metadata?.summaryUrl ? runEvidenceUrl(withPullRequest.metadata.summaryUrl, "handoff-runs") : undefined,
-    }, options);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return markRunError(summary, `pull request reporter failed: ${message}`, options);
-  }
-}
-
-async function reportBrainIngest(
-  options: HarnessServerOptions,
-  summary: RunSummary,
-  appendAuditEvent?: TenantAuditAppender,
-): Promise<RunSummary> {
-  if (!options.brainIngest || summary.status === "cancelled" || summary.status === "paused") return summary;
-  try {
-    await options.brainIngest(summary);
-    const data = brainSignalAuditData(summary);
-    if (appendAuditEvent && summary.metadata?.tenant) {
-      await appendAuditEvent(summary.metadata.tenant, "brain_signal_ingested", data);
-    }
-    return recordRunExternalEffect(summary, {
-      kind: "brain_ingest",
-      ...data,
-      skills: summary.skills,
-    }, options);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return markRunError(summary, `brain ingest failed: ${message}`, options);
-  }
 }
 
 async function writeJsonFileAtomic(path: string, value: unknown): Promise<void> {
@@ -306,150 +168,11 @@ function latestAuditData(events: TenantAuditEvent[], type: TenantAuditEvent["typ
   return recordData(event?.data);
 }
 
-function replayEntryFromEvent(event: HarnessEvent): RunReplayEntry {
-  const data = recordData(event.data);
-  return compactReplayEntry({
-    seq: event.seq,
-    ts: event.ts,
-    type: event.type,
-    title: replayTitle(event, data),
-    detail: replayDetail(data),
-    requester: runRequesterSummaryField(data, "requester"),
-    actor: stringField(data, "actor"),
-    role: tenantRoleField(data, "role"),
-    clientId: stringField(data, "clientId"),
-    toolName: stringField(data, "toolName"),
-    actionId: stringField(data, "actionId") ?? stringField(data, "id"),
-    ok: booleanField(data, "ok"),
-    status: stringField(data, "status"),
-    iteration: numberField(data, "iteration"),
-    actionCount: numberField(data, "actionCount"),
-    finishRequested: booleanField(data, "finishRequested"),
-    phase: stringField(data, "phase"),
-    plan: stringField(data, "plan"),
-    contractPatch: projectContractPatchField(data, "contractPatch"),
-    runReviewContractPatch: projectContractPatchField(data, "runReviewContractPatch"),
-  });
-}
-
-function replayTitle(event: HarnessEvent, data: Record<string, unknown>): string {
-  if (event.type === "user_message") return `User: ${replayText(data.content) ?? replayText(data.goal) ?? "message"}`;
-  if (event.type === "assistant_message") {
-    const iteration = numberField(data, "iteration");
-    return iteration === undefined ? "Assistant message" : `Assistant message ${iteration}`;
-  }
-  if (event.type === "action") return `Tool action: ${stringField(data, "toolName") ?? "unknown"}`;
-  if (event.type === "observation") {
-    const toolName = stringField(data, "toolName") ?? "unknown";
-    return `Observation: ${toolName} ${booleanField(data, "ok") === false ? "failed" : "passed"}`;
-  }
-  if (event.type === "verification") return `Verification ${booleanField(data, "ok") === false ? "failed" : "passed"}`;
-  if (event.type === "evaluation") return `Evaluation ${booleanField(data, "ok") === false ? "failed" : "passed"}`;
-  if (event.type === "reviewer") return `Reviewer ${booleanField(data, "ok") === false ? "flagged" : "passed"}`;
-  if (event.type === "finish") return `Finish: ${stringField(data, "status") ?? "unknown"}`;
-  if (event.type === "workspace_prepare") return `Workspace prepare: ${stringField(data, "status") ?? "unknown"}`;
-  if (event.type === "review_gate") return `Review: ${stringField(data, "status") ?? "unknown"}`;
-  if (event.type === "review_claim") return `Review claim: ${stringField(data, "action") ?? "unknown"}`;
-  if (event.type === "deployment_gate") return `Deployment: ${stringField(data, "status") ?? "unknown"}`;
-  if (event.type === "external_effect") return `External effect: ${stringField(data, "kind") ?? "unknown"}`;
-  if (event.type === "agent_retry") return `Agent retry: ${stringField(data, "kind") ?? "unknown"}`;
-  if (event.type === "model_usage") return `Model usage: ${stringField(data, "model") ?? stringField(data, "responseModel") ?? "unknown"}`;
-  if (event.type === "run_metadata") return "Run metadata";
-  if (event.type === "run_policy") return "Run policy";
-  if (event.type === "resume") return "Resume";
-  if (event.type === "pause") return "Pause";
-  if (event.type === "cancel") return "Cancel";
-  if (event.type === "error") return "Error";
-  return event.type;
-}
-
-function replayDetail(data: Record<string, unknown>): string | undefined {
-  const detail =
-    replayText(data.content) ??
-    replayText(data.message) ??
-    replayText(data.output) ??
-    replayText(data.error) ??
-    replayText(data.reason) ??
-    replayText(data.note) ??
-    undefined;
-  const plan = replayText(data.plan);
-  const retry = replayRetryDetail(data);
-  const modelUsage = replayModelUsageDetail(data);
-  const diagnostics = replayDiagnosticDetail(data);
-  const lines = [
-    detail,
-    plan ? `plan: ${plan}` : undefined,
-    retry,
-    modelUsage,
-    diagnostics,
-  ].filter((line): line is string => Boolean(line));
-  if (lines.length) return lines.join("\n");
-  return Object.keys(data).length ? replayText(JSON.stringify(data)) : undefined;
-}
-
 function replayText(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const text = value.replace(/\s+/g, " ").trim();
   if (!text) return undefined;
   return text.length > 160 ? `${text.slice(0, 157)}...` : text;
-}
-
-function replayDiagnosticDetail(data: Record<string, unknown>): string | undefined {
-  const kind = replayText(data.kind);
-  const details = replayDiagnosticDetails(data.details);
-  const lines = [
-    kind ? `kind=${kind}` : undefined,
-    details ? `details=${details}` : undefined,
-  ].filter((line): line is string => Boolean(line));
-  return lines.length ? lines.join("\n") : undefined;
-}
-
-function replayModelUsageDetail(data: Record<string, unknown>): string | undefined {
-  const lines = [
-    stringField(data, "requestId") ? `requestId=${stringField(data, "requestId")}` : undefined,
-    stringField(data, "responseModel") ? `responseModel=${stringField(data, "responseModel")}` : undefined,
-    numberField(data, "promptTokens") === undefined ? undefined : `promptTokens=${numberField(data, "promptTokens")}`,
-    numberField(data, "completionTokens") === undefined ? undefined : `completionTokens=${numberField(data, "completionTokens")}`,
-    numberField(data, "totalTokens") === undefined ? undefined : `totalTokens=${numberField(data, "totalTokens")}`,
-    numberField(data, "costUsd") === undefined ? undefined : `costUsd=${numberField(data, "costUsd")}`,
-    numberField(data, "attempt") === undefined ? undefined : `attempt=${numberField(data, "attempt")}`,
-  ].filter((line): line is string => Boolean(line));
-  return lines.length ? lines.join("\n") : undefined;
-}
-
-function replayRetryDetail(data: Record<string, unknown>): string | undefined {
-  const attempt = numberField(data, "attempt");
-  const nextAttempt = numberField(data, "nextAttempt");
-  const lines = [
-    attempt === undefined ? undefined : `attempt=${attempt}`,
-    nextAttempt === undefined ? undefined : `nextAttempt=${nextAttempt}`,
-  ].filter((line): line is string => Boolean(line));
-  return lines.length ? lines.join("\n") : undefined;
-}
-
-function replayDiagnosticDetails(value: unknown): string | undefined {
-  const details = recordData(value);
-  // This detail renders into viewer-readable run replay and the tenant audit
-  // stream. Drop entries whose key names a secret and bound each value, matching
-  // the run-summary diagnostic filter, so an upstream error that echoes a token
-  // cannot leak through the diagnostic path.
-  const pairs = Object.entries(details)
-    .filter(([key]) => !isSensitiveDiagnosticKey(key))
-    .map(([key, entry]) => {
-      const rendered = replayDiagnosticValue(entry);
-      return rendered === undefined ? undefined : `${key}=${boundedDiagnosticText(rendered, 200)}`;
-    })
-    .filter((pair): pair is string => pair !== undefined);
-  return pairs.length ? replayText(pairs.join(" ")) : undefined;
-}
-
-function replayDiagnosticValue(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  // Drop nested objects/arrays rather than JSON.stringify them: a nested
-  // { token: ... } sitting under a non-sensitive top-level key would otherwise
-  // leak here. Mirrors publicRunErrorDetailValue in the run-summary path.
-  return undefined;
 }
 
 function recordData(value: unknown): Record<string, unknown> {
@@ -481,46 +204,8 @@ function stringArrayField(data: Record<string, unknown>, key: string): string[] 
 	  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : undefined;
 	}
 
-function compactReplayEntry(entry: RunReplayEntry): RunReplayEntry {
-  return Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined)) as RunReplayEntry;
-}
-
 function arraysEqual(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((entry, index) => entry === right[index]);
-}
-
-async function requireServerStatusAccess(
-  req: IncomingMessage,
-  options: HarnessServerOptions,
-  url?: URL,
-): Promise<TenantAccess | undefined> {
-  const keys = serverStatusAccessKeys(options);
-  const oidc = options.oidcAuthenticator;
-  if (keys.length === 0 && !oidc) return undefined;
-
-  const headerCredential =
-    bearerToken(req.headers.authorization) ??
-    headerValue(req.headers["x-loom-tenant-token"]);
-  const provided = headerCredential ?? streamQueryToken(url);
-  const matches = keys
-    .filter((key) => tenantApiKeyMatches(key, provided))
-    .sort((a, b) => tenantRoleRank(b.role) - tenantRoleRank(a.role));
-  const key = matches[0];
-  if (key) {
-    const access = { actor: key.actor, role: key.role };
-    requireTenantRole(access, "admin");
-    return access;
-  }
-
-  // OIDC identities are deliberately NOT accepted here. Every OidcAccess is
-  // scoped to exactly one tenant (server-auth enforces a resolved tenant claim),
-  // so an OIDC "admin" is a tenant administrator, never a platform operator.
-  // The cross-tenant /status and /metrics views are an operator surface; a
-  // single-tenant admin JWT must not read every other tenant's runs and host
-  // paths. Platform operators authenticate to these endpoints with a key the
-  // operator configured at startup (--tenant-token / --tenant-key). OIDC admins
-  // retain full access to their own /tenants/:tenant/status.
-  throw unauthorized("invalid tenant token");
 }
 
 function streamQueryToken(url: URL | undefined): string | undefined {
@@ -535,52 +220,6 @@ function safeEqualString(left: string | undefined, right: string | undefined): b
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
-// The cross-tenant /status and /metrics views are a platform-operator surface.
-// Only keys the operator configured at startup (--tenant-token / --tenant-key)
-// count as operator credentials. Policy-backed keys are created by tenants
-// themselves through POST /tenants/:tenant/policy/api-keys and must never grant
-// platform-wide visibility, or any tenant's self-issued admin key would read
-// every other tenant's runs, goals, and host paths.
-function serverStatusAccessKeys(options: HarnessServerOptions): TenantApiKey[] {
-  const legacyKeys = Object.entries(options.tenantTokens ?? {})
-    .filter(([tenant]) => isSafeTenantDirectoryName(tenant))
-    .map(([, token]) => ({
-      token,
-      actor: "legacy-token",
-      role: "admin" as const,
-    }));
-  const configuredKeys = Object.entries(options.tenantApiKeys ?? {})
-    .filter(([tenant]) => isSafeTenantDirectoryName(tenant))
-    .flatMap(([, keys]) => keys);
-  return [...legacyKeys, ...configuredKeys];
-}
-
-async function policyStatusAccessKeys(workspaceRoot: string, options: HarnessServerOptions): Promise<TenantApiKey[]> {
-  let entries: Dirent[];
-  try {
-    entries = await readdir(workspaceRoot, { withFileTypes: true });
-  } catch (error) {
-    if (isNotFound(error)) entries = [];
-    else throw error;
-  }
-
-  const keys: TenantApiKey[] = [];
-  const storedTenants = new Set<string>();
-  for (const document of await options.stateBackend?.documents.list<unknown>("tenant-policy") ?? []) {
-    if (!isSafeTenantDirectoryName(document.key)) continue;
-    storedTenants.add(document.key);
-    keys.push(...(tenantPolicyFromUnknown(document.value).apiKeys ?? []));
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (!isSafeTenantDirectoryName(entry.name)) continue;
-    if (storedTenants.has(entry.name)) continue;
-    const policy = await readTenantPolicy(workspaceRoot, entry.name, options);
-    keys.push(...(policy?.apiKeys ?? []));
-  }
-  return keys;
-}
-
 function bearerToken(value: string | string[] | undefined): string | undefined {
   const header = headerValue(value);
   if (!header) return undefined;
@@ -591,10 +230,6 @@ function bearerToken(value: string | string[] | undefined): string | undefined {
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
-}
-
-async function readJson(req: IncomingMessage): Promise<RunRequestBody> {
-  return readJsonBody<RunRequestBody>(req);
 }
 
 function requireSafeName(value: unknown, field: string): string {
@@ -905,4 +540,4 @@ function startedAt(state: RunSummary | RunningRunStatus | QueuedRunStatus): stri
   return "queuedAt" in state ? state.queuedAt : state.startedAt;
 }
 
-export { CancelRequestBody, delay, enforceModelUsageTokenLimitsForBody, enforceModelUsageTokenLimits, markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, hasExplicitAgent, textArray, recordArray, readOptionalJsonObject, readOptionalTextFile, arrayCount, oneLineText, compactStringList, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, compactObject, compactMetadata, reportIssue, reportPullRequest, reportBrainIngest, writeJsonFileAtomic, seqAfter, filterEvents, boundedDiagnosticText, isSensitiveDiagnosticKey, latestAuditData, replayEntryFromEvent, replayText, recordData, stringField, booleanField, numberField, stringArrayField, stringArrayFieldAllowEmpty, arraysEqual, requireServerStatusAccess, streamQueryToken, safeEqualString, policyStatusAccessKeys, bearerToken, headerValue, readJson, requireSafeName, optionalSafeName, requireString, optionalString, optionalBoolean, optionalClientId, optionalClientRequestId, isSafeDirectoryName, timingSafeHexEqual, envNameValue, optionalEnvNameValue, templateParameterValue, stringArray, allowedToolSubset, booleanFlag, positiveInt, positiveIntValue, positiveNumberValue, nonNegativeNumberValue, dockerMemoryValue, dockerNetworkValue, badRequest, payloadTooLarge, conflict, unauthorized, forbidden, notFound, statusForError, writeJson, writeText, writeHtml, setCorsHeaders, isNotFound, isAlreadyExists, startedAt, readJsonBody, readRawBody };
+export { CancelRequestBody, delay, markdownInlineCode, optionalSessionEventString, optionalSessionEventNumber, optionalSessionEventRole, hasRequestValue, textArray, recordArray, readOptionalJsonObject, readOptionalTextFile, arrayCount, oneLineText, compactStringList, optionalSourceRepo, optionalSourceGitRef, optionalSourceIssue, workspacePullRequestRef, compactObject, compactMetadata, writeJsonFileAtomic, seqAfter, filterEvents, boundedDiagnosticText, isSensitiveDiagnosticKey, latestAuditData, replayText, recordData, stringField, booleanField, numberField, stringArrayField, stringArrayFieldAllowEmpty, arraysEqual, streamQueryToken, safeEqualString, bearerToken, headerValue, requireSafeName, optionalSafeName, requireString, optionalString, optionalBoolean, optionalClientId, optionalClientRequestId, isSafeDirectoryName, timingSafeHexEqual, envNameValue, optionalEnvNameValue, templateParameterValue, stringArray, allowedToolSubset, booleanFlag, positiveInt, positiveIntValue, positiveNumberValue, nonNegativeNumberValue, dockerMemoryValue, dockerNetworkValue, badRequest, payloadTooLarge, conflict, unauthorized, forbidden, notFound, statusForError, writeJson, writeText, writeHtml, setCorsHeaders, isNotFound, isAlreadyExists, startedAt, readJsonBody, readRawBody };
