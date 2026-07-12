@@ -2,10 +2,11 @@ import { resolve } from "node:path";
 
 const application = resolve(process.env.LOOM_DESKTOP_E2E_BINARY ?? "apps/desktop/src-tauri/target/release/loom-desktop");
 const driverProvider = process.env.LOOM_DESKTOP_E2E_DRIVER ?? "external";
+const spec = process.env.LOOM_DESKTOP_E2E_SPEC ?? "./tests/desktop-installed.e2e.mjs";
 
 export const config = {
   runner: "local",
-  specs: ["./tests/desktop-installed.e2e.mjs"],
+  specs: [spec],
   maxInstances: 1,
   capabilities: [{
     browserName: "tauri",

@@ -1,0 +1,100 @@
+name: Desktop Signed Updater Install E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - tests/desktop-updater-installed.e2e.mjs
+      - wdio.desktop.conf.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/desktop-updater-install-e2e.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux-signed-update-and-rollback:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      CI: "true"
+      VITE_LOOM_E2E: "1"
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require updater signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+      - name: Install desktop and WebDriver system dependencies
+        run: sudo apt-get update && sudo apt-get install -y dbus-x11 gnome-keyring libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf webkit2gtk-driver xvfb
+      - run: npm ci
+      - run: npm run api:build
+      - name: Install Tauri WebDriver
+        run: cargo install tauri-driver --version 2.0.6 --locked
+      - name: Build signed rollback AppImage
+        run: npm run tauri --workspace @loom/desktop -- build --ci --features e2e --bundles appimage --config src-tauri/tauri.e2e.conf.json
+      - name: Preserve rollback fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(apps/desktop/src-tauri/target/release/bundle/appimage/*_0.1.0_*.AppImage)
+          signatures=(apps/desktop/src-tauri/target/release/bundle/appimage/*_0.1.0_*.sig)
+          test "${#images[@]}" -eq 1
+          test "${#signatures[@]}" -eq 1
+          artifact="${signatures[0]%.sig}"
+          test -s "$artifact"
+          mkdir -p .codex-tmp/updater-install-e2e
+          cp "${images[0]}" .codex-tmp/updater-install-e2e/rollback.AppImage
+          cp "$artifact" .codex-tmp/updater-install-e2e/rollback.update
+          cp "${signatures[0]}" .codex-tmp/updater-install-e2e/rollback.update.sig
+      - name: Build signed forward AppImage
+        run: npm run tauri --workspace @loom/desktop -- build --ci --features e2e --bundles appimage --config src-tauri/tauri.e2e.conf.json --config '{"version":"0.2.0"}'
+      - name: Install baseline and configure updater fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          images=(apps/desktop/src-tauri/target/release/bundle/appimage/*_0.2.0_*.AppImage)
+          signatures=(apps/desktop/src-tauri/target/release/bundle/appimage/*_0.2.0_*.sig)
+          test "${#images[@]}" -eq 1
+          test "${#signatures[@]}" -eq 1
+          artifact="${signatures[0]%.sig}"
+          test -s "$artifact"
+          cp "${images[0]}" .codex-tmp/updater-install-e2e/forward.AppImage
+          cp "$artifact" .codex-tmp/updater-install-e2e/forward.update
+          cp "${signatures[0]}" .codex-tmp/updater-install-e2e/forward.update.sig
+          cp .codex-tmp/updater-install-e2e/rollback.AppImage .codex-tmp/updater-install-e2e/Loom_Desktop.AppImage
+          chmod +x .codex-tmp/updater-install-e2e/Loom_Desktop.AppImage
+          root=$(realpath .codex-tmp/updater-install-e2e)
+          printf 'LOOM_DESKTOP_E2E_BINARY=%s/Loom_Desktop.AppImage\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_DRIVER=external\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_SPEC=./tests/desktop-updater-installed.e2e.mjs\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_UPDATE_BASE_URL=http://127.0.0.1:18787/\n' >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_FORWARD_ARTIFACT=%s/forward.update\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_FORWARD_IMAGE=%s/forward.AppImage\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_FORWARD_SIGNATURE=%s/forward.update.sig\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_ROLLBACK_ARTIFACT=%s/rollback.update\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_ROLLBACK_IMAGE=%s/rollback.AppImage\n' "$root" >> "$GITHUB_ENV"
+          printf 'LOOM_DESKTOP_E2E_ROLLBACK_SIGNATURE=%s/rollback.update.sig\n' "$root" >> "$GITHUB_ENV"
+      - name: Install signed update and rollback
+        run: dbus-run-session -- xvfb-run npm run desktop:e2e
+      - name: Upload WebDriver logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: loom-desktop-signed-updater-install-e2e-logs
+          path: .codex-tmp/wdio
+          if-no-files-found: ignore

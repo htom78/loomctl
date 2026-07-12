@@ -143,6 +143,13 @@ Estimated effort: 3-5 person-weeks.
       real AppImage updater, passes independent signature verification, and
       rejects a tampered artifact
       ([run 29201931618](https://github.com/htom78/loomctl/actions/runs/29201931618)).
+- [ ] Prove signed update installation and rollback against installed artifacts.
+      Build instrumented `0.1.0` and `0.2.0` AppImages with the repository
+      updater identity, install `0.1.0`, update to `0.2.0` from a feature-gated
+      loopback fixture, restart and verify the running version and installed
+      file hash, then install the signed rollback, restart, and verify `0.1.0`
+      and the original hash are restored. Production builds must retain their
+      fixed HTTPS GitHub release endpoints.
 - [ ] Add macOS signing/notarization and Apple Silicon/Intel artifacts.
       Unsigned `.app` and DMG packaging passes on both architectures
       ([run 29195378268](https://github.com/htom78/loomctl/actions/runs/29195378268));

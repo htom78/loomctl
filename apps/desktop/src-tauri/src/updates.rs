@@ -122,10 +122,36 @@ fn channel_url(channel: &str, file: &str) -> Result<Url, String> {
     if !matches!(channel, "stable" | "beta") {
         return Err("update channel must be stable or beta".into());
     }
+    #[cfg(feature = "e2e")]
+    if let Ok(base) = std::env::var("LOOM_DESKTOP_E2E_UPDATE_BASE_URL") {
+        return loopback_channel_url(&base, channel, file);
+    }
     Url::parse(&format!(
         "https://github.com/htom78/loomctl/releases/download/desktop-{channel}/{file}"
     ))
     .map_err(|_| "invalid update channel URL".into())
+}
+
+#[cfg(feature = "e2e")]
+fn loopback_channel_url(base: &str, channel: &str, file: &str) -> Result<Url, String> {
+    let base = Url::parse(base).map_err(|_| "invalid E2E update URL")?;
+    let loopback = match base.host() {
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        Some(url::Host::Domain(domain)) => domain == "localhost",
+        None => false,
+    };
+    if base.scheme() != "http"
+        || !loopback
+        || !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+    {
+        return Err("E2E update URL must be an unauthenticated HTTP loopback origin".into());
+    }
+    base.join(&format!("{channel}/{file}"))
+        .map_err(|_| "invalid E2E update URL".into())
 }
 
 fn is_older_version(candidate: &str, current: &str) -> bool {
@@ -157,6 +183,20 @@ mod tests {
         assert!(channel_url("stable", "rollback-latest.json").is_ok());
         assert!(is_older_version("1.9.0", "1.10.0"));
         assert!(!is_older_version("invalid", "1.10.0"));
+    }
+
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn e2e_update_url_accepts_only_http_loopback_origins() {
+        assert_eq!(
+            loopback_channel_url("http://127.0.0.1:18787/", "stable", "latest.json")
+                .expect("loopback")
+                .as_str(),
+            "http://127.0.0.1:18787/stable/latest.json"
+        );
+        assert!(loopback_channel_url("https://127.0.0.1/", "stable", "latest.json").is_err());
+        assert!(loopback_channel_url("http://example.com/", "stable", "latest.json").is_err());
+        assert!(loopback_channel_url("http://user@localhost/", "stable", "latest.json").is_err());
     }
 
     #[test]
