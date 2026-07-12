@@ -152,11 +152,28 @@ async function invoke(command, args = {}) {
 
 async function restart() {
   await new Promise((resolve) => setTimeout(resolve, 1_000));
+  await waitForDriver();
   await browser.reloadSession();
   await browser.waitUntil(async () => (await browser.getTitle()) === "Loom Desktop", {
     timeout: 20_000,
     timeoutMsg: "updated desktop process did not restart",
   });
+}
+
+async function waitForDriver() {
+  const deadline = Date.now() + Number(process.env.LOOM_DESKTOP_E2E_UPDATE_TIMEOUT_MS ?? 30_000);
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch("http://127.0.0.1:4445/status", {
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (response.ok) return;
+    } catch {
+      // The updater temporarily owns the process while the new app starts.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("updated desktop WebDriver did not restart");
 }
 
 async function installUpdate(hashExpectation) {
