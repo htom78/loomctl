@@ -71,7 +71,7 @@ pub async fn start_oidc_login(
         &http_client,
     )
     .await
-    .map_err(|_| "OIDC discovery failed")?;
+    .map_err(oidc_discovery_error)?;
     let client = CoreClient::from_provider_metadata(
         provider,
         ClientId::new(request.client_id.trim().to_string()),
@@ -169,7 +169,7 @@ pub async fn complete_oidc_login(
         &http_client,
     )
     .await
-    .map_err(|_| "OIDC discovery failed")?;
+    .map_err(oidc_discovery_error)?;
     let client =
         CoreClient::from_provider_metadata(provider, ClientId::new(pending.client_id), None)
             .set_redirect_uri(
@@ -196,6 +196,14 @@ pub async fn complete_oidc_login(
 
 fn oidc_state_expired(created_at: Instant) -> bool {
     created_at.elapsed() > Duration::from_secs(10 * 60)
+}
+
+fn oidc_discovery_error(error: impl std::fmt::Display) -> String {
+    #[cfg(feature = "e2e")]
+    eprintln!("OIDC discovery failed: {error}");
+    #[cfg(not(feature = "e2e"))]
+    let _ = error;
+    "OIDC discovery failed".into()
 }
 
 #[cfg(test)]
