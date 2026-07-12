@@ -37,7 +37,7 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
       - name: Install desktop and WebDriver system dependencies
-        run: sudo apt-get update && sudo apt-get install -y dbus-x11 gnome-keyring libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf webkit2gtk-driver xvfb xdg-utils
+        run: sudo apt-get update && sudo apt-get install -y dbus-x11 gnome-keyring libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf ripgrep webkit2gtk-driver xvfb xdg-utils
       - run: npm ci
       - run: npm run build
       - run: npm run api:build
