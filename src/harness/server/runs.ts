@@ -5,6 +5,7 @@ import { basename, join, resolve } from "node:path";
 import { createAgentWithSetupSteps, createCommandAgent, createScriptedAgentFromSteps, type AgentStep, type HarnessAgent } from "../agents.js";
 import { type TenantAuditActor, type TenantAuditAppender, type TenantAuditEvent, type TenantRole } from "../audit.js";
 import { makeRunId, runHarness, type RunPauseRequest, type RunRequester } from "../loop.js";
+import { scrubSecretText } from "../redact.js";
 import { createOpenAiCompatibleAgent, type ModelAgentProtocol } from "../model-agent.js";
 import { appendRunEvent, readRunEvents } from "../run-store.js";
 import { readQueuedRunSnapshot as loadQueuedRunSnapshot, readRunState as loadRunState, readRunStateIfPresent as loadRunStateIfPresent, listStoredRunStates, writeQueuedRunSnapshot as persistQueuedRunSnapshot, writeRunStatus as persistRunStatus, writeRunSummary as persistRunSummary, type QueuedRunBlockedReason, type QueuedRunConcurrencySummary, type QueuedRunSnapshot, type QueuedRunStatus, type ReadableRunState, type RunningRunStatus } from "../run-state.js";
@@ -2587,6 +2588,9 @@ async function recordRunExternalEffect(summary: RunSummary, data: Record<string,
 }
 
 async function markRunError(summary: RunSummary, message: string, options: HarnessServerOptions): Promise<RunSummary> {
+  // Reporter/upstream failure messages can echo credentials; scrub before they
+  // persist into the summary and error event (both viewer-readable).
+  message = scrubSecretText(message);
   const event = await recordRunError(summary, message, options);
   const failed: RunSummary = {
     ...summary,
@@ -2601,6 +2605,7 @@ async function markRunError(summary: RunSummary, message: string, options: Harne
 }
 
 async function recordRunError(summary: RunSummary, message: string, options: HarnessServerOptions): Promise<HarnessEvent> {
+  message = scrubSecretText(message);
   const event = await appendRunEvent(summary.runDir, "error", { message }, options.stateBackend?.events);
   const observed = { ...summary, eventCount: event.seq };
   await writeRunSummary(observed, options);

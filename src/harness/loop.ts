@@ -7,6 +7,7 @@ import { createLocalExecutor, type WorkspaceExecutor } from "./executor.js";
 import { createRunStore, readRunEvents } from "./run-store.js";
 import { createToolRuntime, effectiveAllowedTools, runVerification } from "./tools.js";
 import type { PlatformStateBackend } from "./storage/contracts.js";
+import { scrubSecretText } from "./redact.js";
 
 export interface RunHarnessOptions {
   goal: string;
@@ -385,7 +386,12 @@ function compactObject<T extends Record<string, unknown>>(value: T): T {
 function runErrorSummary(error: unknown, message: string, phase?: string, iteration?: number) {
   const diagnostic = diagnosticFields(error);
   return compactObject({
-    message,
+    // Scrub secrets an upstream failure may have echoed into the free-text
+    // message before it persists; it surfaces to viewers through the run
+    // summary, replay, and /events endpoints. Structured `details` are left to
+    // their producer (e.g. the model agent already bounds and redacts its own
+    // response excerpt) and are key-name filtered on read.
+    message: scrubSecretText(message),
     phase,
     iteration,
     kind: diagnostic.kind,
