@@ -89,7 +89,9 @@ Estimated effort: 4-6 person-weeks after Phase 0.
 - [x] Add preview URLs and Coder/VS Code workspace links.
 - [x] Add native notifications for run completion, failed verification,
       pending review, and pending deployment.
-- [ ] Add macOS and Windows development builds and smoke tests.
+- [x] Add macOS and Windows development builds and smoke tests. The native
+      matrix passes on macOS ARM/Intel and Windows ARM/x64, with Linux included
+      as a compatibility gate ([run 29193650909](https://github.com/htom78/loomctl/actions/runs/29193650909)).
 
 Acceptance gate:
 
@@ -139,8 +141,9 @@ Estimated effort: 3-5 person-weeks.
 - [ ] Add Linux AppImage/deb builds after macOS and Windows are stable.
 - [ ] Add cross-platform end-to-end tests for login, SSE reconnect, terminal,
       review gate, update verification, and credential persistence.
-      Cross-platform contract/native build verification is wired; installed-app
-      OIDC, keychain persistence, and signed-update E2E remain release gates.
+      Cross-platform contract tests and native release builds pass on macOS
+      ARM/Intel, Windows ARM/x64, and Linux; installed-app OIDC, keychain
+      persistence, and signed-update E2E remain release gates.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
       The `tauri-apps/tauri-action@v1` workflow is ready but no signed release
       may be published until the platform signing secrets pass preflight.
