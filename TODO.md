@@ -105,7 +105,7 @@ Acceptance gate:
       deb, `.app`, and NSIS E2E runs restart the native process, reconnect from
       persisted profile metadata, and read the token from the OS credential
       store on Linux, macOS ARM/Intel, and Windows x64/ARM
-      ([run 29203147902](https://github.com/htom78/loomctl/actions/runs/29203147902)).
+      ([run 29207374897](https://github.com/htom78/loomctl/actions/runs/29207374897)).
 
 ## Phase 2 - Development Workbench
 
@@ -144,13 +144,15 @@ Estimated effort: 3-5 person-weeks.
       rejects a tampered artifact
       ([run 29201931618](https://github.com/htom78/loomctl/actions/runs/29201931618)).
 - [x] Prove signed update installation and rollback against installed artifacts.
-      Build instrumented `0.1.0` and `0.2.0` AppImages with the repository
-      updater identity, install `0.1.0`, update to `0.2.0` from a feature-gated
-      loopback fixture, restart and verify the running version and installed
-      file hash, then install the signed rollback, restart, and verify `0.1.0`
-      and the original hash are restored. Production builds must retain their
-      fixed HTTPS GitHub release endpoints
-      ([run 29204463396](https://github.com/htom78/loomctl/actions/runs/29204463396)).
+      The five-platform matrix builds instrumented `0.1.0` and `0.2.0` Linux
+      AppImage, macOS ARM/Intel app, and Windows x64/ARM NSIS updater artifacts
+      with the repository updater identity. It installs `0.1.0`, updates to
+      `0.2.0` from a feature-gated loopback fixture, reconnects after the native
+      relaunch, verifies the running version and installed file change, then
+      installs the signed rollback and proves `0.1.0` and the original installed
+      hash are restored. Production builds retain only their fixed HTTPS GitHub
+      release endpoints
+      ([run 29207823377](https://github.com/htom78/loomctl/actions/runs/29207823377)).
 - [ ] Add macOS signing/notarization and Apple Silicon/Intel artifacts.
       Unsigned `.app` and DMG packaging passes on both architectures
       ([run 29195378268](https://github.com/htom78/loomctl/actions/runs/29195378268));
@@ -165,7 +167,7 @@ Estimated effort: 3-5 person-weeks.
       both packages ([run 29194779541](https://github.com/htom78/loomctl/actions/runs/29194779541)).
 - [ ] Publish Linux release artifacts after macOS and Windows signing gates are
       stable. Linux remains an explicit opt-in on the release workflow.
-- [ ] Add cross-platform end-to-end tests for login, SSE reconnect, terminal,
+- [x] Add cross-platform end-to-end tests for login, SSE reconnect, terminal,
       review gate, update verification, and credential persistence.
       The feature-gated WebdriverIO/Tauri harness installs a Linux deb, macOS
       `.app`, and Windows NSIS package, then exercises real OIDC PKCE through
@@ -173,13 +175,13 @@ Estimated effort: 3-5 person-weeks.
       terminal, and credential-store persistence against deterministic
       fixtures. Linux, macOS ARM/Intel, and Windows x64/ARM installed-app jobs
       pass
-      ([run 29203147902](https://github.com/htom78/loomctl/actions/runs/29203147902)),
-      and normal production bundles exclude WebDriver instrumentation. Linux
-      also passes real signed AppImage update installation, restart, downgrade,
-      and hash restoration
-      ([run 29204463396](https://github.com/htom78/loomctl/actions/runs/29204463396));
-      native signed update/rollback coverage on macOS and Windows remains tied
-      to their external signing identities.
+      ([run 29207374897](https://github.com/htom78/loomctl/actions/runs/29207374897)),
+      and normal production bundles exclude WebDriver instrumentation. The same
+      five targets pass real repository-signed updater installation, native
+      relaunch, downgrade, and installed-hash restoration
+      ([run 29207823377](https://github.com/htom78/loomctl/actions/runs/29207823377)).
+      These updater signatures do not replace the Apple notarization and Windows
+      Authenticode identities still required above.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
       The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
       it only after every requested platform verification passes, but no signed

@@ -90,7 +90,7 @@ five-platform matrix covers OIDC Authorization Code + PKCE through the real
 operating-system deep-link handler, SSE reconnect and sequence recovery, review
 approval, terminal execution, and credential-store persistence after a native
 process restart. Linux, macOS ARM/Intel, and Windows x64/ARM pass in
-[run 29203147902](https://github.com/htom78/loomctl/actions/runs/29203147902).
+[run 29207374897](https://github.com/htom78/loomctl/actions/runs/29207374897).
 Both WebDriver Rust plugins, the WebView bridge, and their capabilities are
 feature-gated; normal CI fails if production frontend or Rust dependency output
 contains that instrumentation.
@@ -103,14 +103,19 @@ single-byte artifact modification is rejected. The gate passes in
 [run 29201931618](https://github.com/htom78/loomctl/actions/runs/29201931618).
 
 The separate **Desktop Signed Updater Install E2E** workflow builds signed,
-instrumented `0.1.0` and `0.2.0` AppImages with that same repository identity.
-It installs `0.1.0`, serves signed manifests and artifacts from a strictly
-feature-gated loopback fixture, installs `0.2.0`, restarts and verifies both the
-running version and installed file hash, then installs the signed downgrade,
-restarts, and proves the `0.1.0` version and original hash were restored. The
-production binary cannot compile the loopback override and retains only fixed
-HTTPS GitHub release endpoints. The gate passes in
-[run 29204463396](https://github.com/htom78/loomctl/actions/runs/29204463396).
+instrumented `0.1.0` and `0.2.0` Linux AppImages, macOS ARM/Intel app updaters,
+and Windows x64/ARM NSIS updaters with that same repository identity. It
+installs `0.1.0`, serves signed manifests and artifacts from a strictly
+feature-gated loopback fixture, installs `0.2.0`, reconnects after the native
+relaunch, and verifies the running version and installed file change. It then
+installs the signed downgrade and proves the `0.1.0` version and original
+installed hash were restored. macOS and Linux relaunch through the application;
+the Windows updater exits into NSIS, which relaunches the installed application.
+The production binary cannot compile the loopback override and retains only
+fixed HTTPS GitHub release endpoints. All five targets pass in
+[run 29207823377](https://github.com/htom78/loomctl/actions/runs/29207823377).
+This verifies repository updater signatures, not Apple notarization or Windows
+Authenticode signing.
 
 Release jobs additionally require:
 
