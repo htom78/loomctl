@@ -31,6 +31,12 @@ dpkg-deb --contents "$deb" >/dev/null
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
 
+dpkg-deb --extract "$deb" "$workdir/deb"
+deb_desktop_entries=("$workdir"/deb/usr/share/applications/*.desktop)
+test "${#deb_desktop_entries[@]}" -eq 1
+rg -q '^Exec=loom-desktop %u$' "${deb_desktop_entries[0]}"
+rg -q '^MimeType=.*x-scheme-handler/loom' "${deb_desktop_entries[0]}"
+
 cp "$appimage" "$workdir/Loom_Desktop.AppImage"
 chmod +x "$workdir/Loom_Desktop.AppImage"
 (

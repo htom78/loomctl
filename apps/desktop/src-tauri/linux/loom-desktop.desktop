@@ -1,0 +1,10 @@
+[Desktop Entry]
+Categories=Development;
+Comment=Loom agent workflow desktop client
+Exec=loom-desktop %u
+StartupWMClass=loom-desktop
+Icon=loom-desktop
+Name=Loom Desktop
+Terminal=false
+Type=Application
+MimeType=x-scheme-handler/loom;
