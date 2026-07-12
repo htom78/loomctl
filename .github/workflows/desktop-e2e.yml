@@ -1,0 +1,76 @@
+name: Desktop Installed-App E2E
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - packages/loom-api/**
+      - tests/desktop-installed.e2e.mjs
+      - wdio.desktop.conf.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/desktop-e2e.yml
+  pull_request:
+    paths:
+      - apps/desktop/**
+      - packages/loom-api/**
+      - tests/desktop-installed.e2e.mjs
+      - wdio.desktop.conf.mjs
+      - package.json
+      - package-lock.json
+      - .github/workflows/desktop-e2e.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux-installed-app:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install desktop and WebDriver system dependencies
+        run: sudo apt-get update && sudo apt-get install -y dbus-x11 gnome-keyring libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf webkit2gtk-driver xvfb xdg-utils
+      - run: npm ci
+      - run: npm run build
+      - run: npm run api:build
+      - name: Install Tauri WebDriver
+        run: cargo install tauri-driver --version 2.0.6 --locked
+      - name: Build instrumented deb
+        env:
+          CI: "true"
+          VITE_LOOM_E2E: "1"
+        run: npm run tauri --workspace @loom/desktop -- build --ci --features e2e --bundles deb --config src-tauri/tauri.e2e.conf.json --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Install deb
+        shell: bash
+        run: |
+          set -euo pipefail
+          debs=(apps/desktop/src-tauri/target/release/bundle/deb/*.deb)
+          test "${#debs[@]}" -eq 1
+          sudo dpkg -i "${debs[0]}"
+          test -x /usr/bin/loom-desktop
+      - name: Run installed-app workflow
+        shell: bash
+        run: |
+          dbus-run-session -- bash -euo pipefail -c '
+            eval "$(printf "\n" | gnome-keyring-daemon --unlock --components=secrets)"
+            export LOOM_DESKTOP_E2E_BINARY=/usr/bin/loom-desktop
+            xvfb-run --auto-servernum npm run desktop:e2e
+          '
+      - name: Upload WebDriver logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: loom-desktop-installed-e2e-logs
+          path: .codex-tmp/wdio
+          if-no-files-found: ignore
+      - name: Uninstall deb
+        if: always()
+        run: sudo dpkg -r loom-desktop || true

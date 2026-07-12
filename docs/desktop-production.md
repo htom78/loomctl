@@ -80,6 +80,16 @@ tests, and Rust tests. It also builds and uploads unsigned `.app`/DMG packages o
 macOS ARM/Intel and NSIS installers on Windows ARM/x64; Linux retains a native
 binary compatibility job because its packages are covered by repository CI.
 
+The separate **Desktop Installed-App E2E** workflow builds and installs an
+instrumented Linux deb, then uses WebdriverIO with `tauri-driver` to test the
+packaged application against deterministic local OIDC and Loom fixtures. It
+covers OIDC Authorization Code + PKCE through the real deep-link handler, SSE
+reconnect and sequence recovery, review approval, terminal execution, and
+credential-store persistence after a WebDriver session restart. The WebDriver
+Rust plugin, WebView bridge, and capability are all feature-gated; normal CI
+fails if production frontend or Rust dependency output contains that
+instrumentation.
+
 Release jobs additionally require:
 
 - macOS `codesign --verify`, Gatekeeper `spctl --assess`, and notarization staple

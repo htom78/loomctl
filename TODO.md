@@ -34,6 +34,9 @@ Deep coding work
 - [Tauri 2](https://github.com/tauri-apps/tauri) for the desktop shell,
   installers, notifications, deep links, and signed updates.
 - [xterm.js](https://github.com/xtermjs/xterm.js) for workspace terminals.
+- [WebdriverIO Tauri Service](https://github.com/webdriverio-community/wdio-tauri-service)
+  for installed desktop application E2E tests. Its bridge is compiled only into
+  dedicated E2E packages and must remain absent from production artifacts.
 - [Monaco Editor](https://github.com/microsoft/monaco-editor) for bounded text
   editing only, after the core client is stable.
 - [Coder](https://github.com/coder/coder) and its VS Code integration for the
@@ -148,9 +151,14 @@ Estimated effort: 3-5 person-weeks.
       stable. Linux remains an explicit opt-in on the release workflow.
 - [ ] Add cross-platform end-to-end tests for login, SSE reconnect, terminal,
       review gate, update verification, and credential persistence.
+      The feature-gated WebdriverIO/Tauri harness builds and installs a Linux
+      deb, exercises real OIDC PKCE/deep-link login, SSE reconnect, review,
+      terminal, and keyring persistence against deterministic fixtures, and
+      verifies that production bundles exclude WebDriver instrumentation.
       Cross-platform contract tests, native builds, and unsigned package builds
-      pass on macOS ARM/Intel, Windows ARM/x64, and Linux; installed-app OIDC,
-      keychain persistence, and signed-update E2E remain release gates.
+      pass on macOS ARM/Intel, Windows ARM/x64, and Linux. A green installed-app
+      workflow run, macOS/Windows installed-app coverage, and signed update and
+      rollback E2E remain release gates.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
       The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
       it only after every requested platform verification passes, but no signed

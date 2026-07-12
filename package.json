@@ -25,6 +25,7 @@
     "desktop:build": "npm run api:build && npm run build --workspace @loom/desktop",
     "desktop:bundle": "npm run api:build && npm run bundle --workspace @loom/desktop",
     "desktop:tauri": "npm run tauri --workspace @loom/desktop",
+    "desktop:e2e": "wdio run wdio.desktop.conf.mjs",
     "api:build": "npm run build --workspace @loom/api",
     "start": "node dist/index.js"
   },
@@ -38,8 +39,15 @@
   "devDependencies": {
     "@types/node": "^22.9.0",
     "@types/pg": "^8.20.0",
+    "@wdio/cli": "^9.29.1",
+    "@wdio/globals": "^9.29.1",
+    "@wdio/jasmine-framework": "^9.29.1",
+    "@wdio/spec-reporter": "^9.29.1",
+    "@wdio/tauri-plugin": "^1.2.0",
+    "@wdio/tauri-service": "^1.2.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "webdriverio": "^9.29.1"
   },
   "optionalDependencies": {
     "@rollup/rollup-darwin-arm64": "^4.62.2",
