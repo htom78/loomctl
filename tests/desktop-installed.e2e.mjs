@@ -71,7 +71,7 @@ describe("installed Loom Desktop", () => {
     assert.deepEqual(fixture.streamAfter.slice(0, 2), [0, 1]);
 
     await $("button=Approve").click();
-    await browser.waitUntil(async () => (await runRow.getText()).includes("passed"), {
+    await browser.waitUntil(async () => (await runRow.getText()).toLowerCase().includes("passed"), {
       timeoutMsg: "review approval did not update the run",
     });
 
