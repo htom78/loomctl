@@ -566,11 +566,10 @@ test("loom goal forwards skills into native goal context", async () => {
   await chmod(join(fakeBin, "codex"), 0o755);
 
   const result = await execa(
-    "npx",
+    process.execPath,
     [
-      "--prefix",
-      process.cwd(),
-      "tsx",
+      "--import",
+      join(process.cwd(), "node_modules/tsx/dist/loader.mjs"),
       join(process.cwd(), "src/index.ts"),
       "goal",
       "tests pass",
