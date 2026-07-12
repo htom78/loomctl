@@ -85,9 +85,11 @@ instrumented Linux deb, then uses WebdriverIO with `tauri-driver` to test the
 packaged application against deterministic local OIDC and Loom fixtures. It
 covers OIDC Authorization Code + PKCE through the real deep-link handler, SSE
 reconnect and sequence recovery, review approval, terminal execution, and
-credential-store persistence after a WebDriver session restart. The WebDriver
-Rust plugin, WebView bridge, and capability are all feature-gated; normal CI
-fails if production frontend or Rust dependency output contains that
+credential-store persistence after a native process restart. The current Linux
+installed-app gate passes in
+[run 29200854687](https://github.com/htom78/loomctl/actions/runs/29200854687).
+The WebDriver Rust plugin, WebView bridge, and capability are all feature-gated;
+normal CI fails if production frontend or Rust dependency output contains that
 instrumentation.
 
 Release jobs additionally require:

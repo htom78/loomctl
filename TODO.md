@@ -100,8 +100,11 @@ Acceptance gate:
 
 - [ ] A developer can complete the golden path from sign-in to reviewed PR
       without using the embedded browser Dashboard.
-- [ ] Closing/restarting the client preserves profiles but does not expose
-      credentials in files, WebView storage, logs, or diagnostics.
+- [x] Closing/restarting the client preserves profiles but does not expose
+      credentials in files, WebView storage, logs, or diagnostics. The Linux
+      installed-deb E2E restarts the native process, reconnects from persisted
+      profile metadata, and reads the token from the OS credential store
+      ([run 29200854687](https://github.com/htom78/loomctl/actions/runs/29200854687)).
 
 ## Phase 2 - Development Workbench
 
@@ -156,9 +159,11 @@ Estimated effort: 3-5 person-weeks.
       terminal, and keyring persistence against deterministic fixtures, and
       verifies that production bundles exclude WebDriver instrumentation.
       Cross-platform contract tests, native builds, and unsigned package builds
-      pass on macOS ARM/Intel, Windows ARM/x64, and Linux. A green installed-app
-      workflow run, macOS/Windows installed-app coverage, and signed update and
-      rollback E2E remain release gates.
+      pass on macOS ARM/Intel, Windows ARM/x64, and Linux. The Linux
+      installed-app workflow passes
+      ([run 29200854687](https://github.com/htom78/loomctl/actions/runs/29200854687));
+      macOS/Windows installed-app coverage and signed update and rollback E2E
+      remain release gates.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
       The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
       it only after every requested platform verification passes, but no signed
