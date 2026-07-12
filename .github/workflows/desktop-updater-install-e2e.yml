@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: desktop-updater-install-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux-signed-update-and-rollback:
     runs-on: ubuntu-22.04
@@ -133,7 +137,7 @@ jobs:
       - run: npm ci
       - run: npm run api:build
       - name: Build signed rollback app updater
-        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --features e2e --target ${{ matrix.target }} --bundles app --config src-tauri/tauri.e2e.conf.json
+        run: npm run tauri --workspace @loom/desktop -- build --ci --features e2e --target ${{ matrix.target }} --bundles app --config src-tauri/tauri.e2e.conf.json
       - name: Preserve rollback fixtures
         shell: bash
         run: |
@@ -153,7 +157,7 @@ jobs:
           cp "$artifact" .codex-tmp/updater-install-e2e/rollback.update
           cp "$signature" .codex-tmp/updater-install-e2e/rollback.update.sig
       - name: Build signed forward app updater
-        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --features e2e --target ${{ matrix.target }} --bundles app --config src-tauri/tauri.e2e.conf.json --config '{"version":"0.2.0"}'
+        run: npm run tauri --workspace @loom/desktop -- build --ci --features e2e --target ${{ matrix.target }} --bundles app --config src-tauri/tauri.e2e.conf.json --config '{"version":"0.2.0"}'
       - name: Install baseline and configure updater fixture
         shell: bash
         run: |
@@ -232,7 +236,7 @@ jobs:
       - run: npm ci
       - run: npm run api:build
       - name: Build signed rollback NSIS updater
-        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --features e2e --target ${{ matrix.target }} --bundles nsis --config src-tauri/tauri.e2e.conf.json
+        run: npm run tauri --workspace @loom/desktop -- build --ci --features e2e --target ${{ matrix.target }} --bundles nsis --config src-tauri/tauri.e2e.conf.json
       - name: Preserve rollback fixtures
         shell: pwsh
         run: |
@@ -250,7 +254,7 @@ jobs:
           Copy-Item $artifact "$root/rollback.update"
           Copy-Item $signatures[0].FullName "$root/rollback.update.sig"
       - name: Build signed forward NSIS updater
-        run: npm run tauri --workspace @loom/desktop -- build --ci --no-sign --features e2e --target ${{ matrix.target }} --bundles nsis --config src-tauri/tauri.e2e.conf.json --config '{"version":"0.2.0"}'
+        run: npm run tauri --workspace @loom/desktop -- build --ci --features e2e --target ${{ matrix.target }} --bundles nsis --config src-tauri/tauri.e2e.conf.json --config '{"version":"0.2.0"}'
       - name: Install baseline and configure updater fixture
         shell: pwsh
         run: |
