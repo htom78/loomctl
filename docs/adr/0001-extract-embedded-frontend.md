@@ -1,7 +1,16 @@
 # 0001 — Extract the embedded SPA into a real frontend build
 
-- Status: accepted
+- Status: superseded (2026-07-12) — see note below
 - Date: 2026-07-12
+
+> **Superseded the same day.** After the pipeline + status slice landed
+> (`apps/dashboard`), we found a parallel effort had already built `@loom/desktop`
+> (a Tauri + React native client) on a shared `@loom/api` typed client — the
+> client direction the project actually wants. Rather than maintain two frontends,
+> we removed `apps/dashboard` and converged on `@loom/desktop` + `@loom/api`. This
+> ADR is kept as the record of that decision and its reversal; the reasoning below
+> is still the correct rationale *for extracting a frontend* — it just no longer
+> applies to the operator SPA, whose views `@loom/desktop` now covers natively.
 
 ## Context
 
