@@ -54,6 +54,8 @@ describe("installed Loom Desktop", () => {
     const callbackUrl = authorization.headers.get("location");
     assert.match(callbackUrl ?? "", /^loom:\/\/auth\/callback\?code=/);
 
+    const staleError = await $(".error-banner button");
+    if (await staleError.isDisplayed()) await staleError.click();
     await browser.tauri.triggerDeeplink(callbackUrl);
     await browser.waitUntil(async () => {
       if (await $(".health.ok").isDisplayed()) return true;
