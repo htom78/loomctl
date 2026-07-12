@@ -45,8 +45,39 @@ jobs:
             test -n "${!name}" || { echo "Missing required signing secret: $name"; exit 1; }
           done
 
-  desktop:
+  create-draft:
     needs: signing-preflight
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Create immutable draft release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
+          tag="desktop-${{ inputs.channel }}-v${version}"
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"$tag\") | .id" | sed -n '1p')
+          if test -n "$release_id"; then
+            draft=$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --jq .draft)
+            test "$draft" = true || { echo "Release $tag already exists and is immutable"; exit 1; }
+            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          fi
+          args=(release create "$tag" --draft --generate-notes --target "$GITHUB_SHA" --title "Loom Desktop ${{ inputs.channel }} v${version}")
+          if test "${{ inputs.channel }}" = beta; then args+=(--prerelease); fi
+          gh "${args[@]}"
+          release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"$tag\" and .draft) | .id" | sed -n '1p')
+          test -n "$release_id"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  desktop:
+    needs: create-draft
     strategy:
       fail-fast: false
       matrix:
@@ -107,12 +138,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npm run tauri
-          tagName: desktop-${{ inputs.channel }}-v__VERSION__
-          releaseName: Loom Desktop ${{ inputs.channel }} v__VERSION__
-          releaseBody: Signed Loom Desktop release for the ${{ inputs.channel }} channel.
-          releaseDraft: true
-          prerelease: ${{ inputs.channel == 'beta' }}
-          generateReleaseNotes: true
+          releaseId: ${{ needs.create-draft.outputs.release_id }}
           retryAttempts: 2
           args: --target ${{ matrix.target }}
       - name: Verify macOS signature and notarization
@@ -141,7 +167,7 @@ jobs:
 
   linux:
     if: inputs.include_linux
-    needs: desktop
+    needs: [create-draft, desktop]
     runs-on: ubuntu-22.04
     env:
       CI: "true"
@@ -163,31 +189,29 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npm run tauri
-          tagName: desktop-${{ inputs.channel }}-v__VERSION__
-          releaseName: Loom Desktop ${{ inputs.channel }} v__VERSION__
-          releaseBody: Signed Loom Desktop release for the ${{ inputs.channel }} channel.
-          releaseDraft: true
-          prerelease: ${{ inputs.channel == 'beta' }}
-          generateReleaseNotes: true
+          releaseId: ${{ needs.create-draft.outputs.release_id }}
           retryAttempts: 2
           args: --bundles appimage,deb
       - name: Verify Linux packages and startup
         run: scripts/verify-linux-desktop-packages.sh
 
-  promote-channel:
-    needs: [desktop, linux]
-    if: ${{ always() && needs.desktop.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') }}
+  finalize-release:
+    needs: [create-draft, desktop, linux]
+    if: ${{ always() && needs.create-draft.result == 'success' }}
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v6
-      - name: Promote immutable release into channel metadata
+      - name: Delete failed draft release
+        if: ${{ needs.desktop.result != 'success' || (needs.linux.result != 'success' && needs.linux.result != 'skipped') }}
+        run: gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${{ needs.create-draft.outputs.release_id }}"
+      - name: Publish immutable release and promote channel metadata
+        if: ${{ needs.desktop.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') }}
         shell: bash
         run: |
-          version=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
-          tag="desktop-${{ inputs.channel }}-v${version}"
+          tag="${{ needs.create-draft.outputs.tag }}"
           prerelease=false
           if test "${{ inputs.channel }}" = beta; then prerelease=true; fi
-          gh release edit "$tag" --draft=false --prerelease="$prerelease"
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${{ needs.create-draft.outputs.release_id }}" -F draft=false -F prerelease="$prerelease" >/dev/null
           node scripts/promote-desktop-release.mjs "${{ inputs.channel }}" "$tag"

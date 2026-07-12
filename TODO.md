@@ -133,11 +133,14 @@ Estimated effort: 3-5 person-weeks.
 - [x] Add scrubbed client diagnostics and opt-in crash reporting.
 - [x] Add signed update channels (`beta` and `stable`) with rollback metadata.
 - [ ] Add macOS signing/notarization and Apple Silicon/Intel artifacts.
-      The official Tauri release matrix and security checks are ready; Apple
-      Developer certificate/notarization secrets and a real release are still required.
+      Unsigned `.app` and DMG packaging passes on both architectures
+      ([run 29195378268](https://github.com/htom78/loomctl/actions/runs/29195378268));
+      Apple Developer certificate/notarization secrets and a real release are
+      still required.
 - [ ] Add Windows code signing and x64/arm64 installers.
-      The native runner matrix, certificate import, and Authenticode checks are
-      ready; a Windows code-signing certificate and a real release are still required.
+      Unsigned NSIS packaging passes on both architectures, and certificate
+      import/Authenticode checks are ready; a Windows code-signing certificate
+      and a real release are still required.
 - [x] Add Linux AppImage/deb builds and startup smoke tests. CI validates package
       metadata, extracts the AppImage, keeps it running under Xvfb, and uploads
       both packages ([run 29194779541](https://github.com/htom78/loomctl/actions/runs/29194779541)).
@@ -145,9 +148,9 @@ Estimated effort: 3-5 person-weeks.
       stable. Linux remains an explicit opt-in on the release workflow.
 - [ ] Add cross-platform end-to-end tests for login, SSE reconnect, terminal,
       review gate, update verification, and credential persistence.
-      Cross-platform contract tests and native release builds pass on macOS
-      ARM/Intel, Windows ARM/x64, and Linux; installed-app OIDC, keychain
-      persistence, and signed-update E2E remain release gates.
+      Cross-platform contract tests, native builds, and unsigned package builds
+      pass on macOS ARM/Intel, Windows ARM/x64, and Linux; installed-app OIDC,
+      keychain persistence, and signed-update E2E remain release gates.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
       The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
       it only after every requested platform verification passes, but no signed

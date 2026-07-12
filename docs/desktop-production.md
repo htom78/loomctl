@@ -33,9 +33,11 @@ desktop-beta-v0.1.0
 desktop-stable-v0.1.0
 ```
 
-Platform jobs upload into a draft immutable release. After every requested job
-passes its native package/signature check, the promotion job publishes that
-release and updates the rolling `desktop-beta` or `desktop-stable` release with:
+A dedicated job creates one draft immutable release and passes its release ID
+to every platform job, avoiding concurrent release-creation races. After every
+requested job passes its native package/signature check, the finalizer publishes
+that release and updates the rolling `desktop-beta` or `desktop-stable` release
+with:
 
 - `latest.json`: current signed updater manifest;
 - `rollback-latest.json`: previous signed updater manifest, when available;
@@ -74,7 +76,9 @@ Repository CI runs the production frontend build, Rust security tests, and a
 Linux AppImage/deb build. It validates package metadata, extracts and starts the
 AppImage under Xvfb, and uploads both packages as a workflow artifact. The
 cross-platform workflow repeats the desktop API golden path, profile persistence
-tests, Rust tests, and native build on macOS ARM/Intel, Windows ARM/x64, and Linux.
+tests, and Rust tests. It also builds and uploads unsigned `.app`/DMG packages on
+macOS ARM/Intel and NSIS installers on Windows ARM/x64; Linux retains a native
+binary compatibility job because its packages are covered by repository CI.
 
 Release jobs additionally require:
 
@@ -83,6 +87,9 @@ Release jobs additionally require:
 - Windows `Get-AuthenticodeSignature` returning `Valid` for every installer;
 - updater artifacts signed by the repository updater key;
 - successful channel promotion only after all requested platform jobs pass.
+
+If any platform verification fails, the finalizer deletes the draft instead of
+publishing a partial release.
 
 Final production acceptance is intentionally not inferred from CI. Install the
 published artifacts on clean machines, run the normal `npm run
