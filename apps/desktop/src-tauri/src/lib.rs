@@ -28,7 +28,9 @@ fn internal_navigation(url: &url::Url) -> bool {
 pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(feature = "e2e")]
-    let builder = builder.plugin(tauri_plugin_wdio::init());
+    let builder = builder
+        .plugin(tauri_plugin_wdio_webdriver::init())
+        .plugin(tauri_plugin_wdio::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         if let Some(window) = app.get_webview_window("main") {

@@ -11,7 +11,8 @@
           "permissions": [
             "core:default",
             "core:window:default",
-            "wdio:default"
+            "wdio:default",
+            "wdio-webdriver:default"
           ]
         }
       ]

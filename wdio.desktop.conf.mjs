@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 
 const application = resolve(process.env.LOOM_DESKTOP_E2E_BINARY ?? "apps/desktop/src-tauri/target/release/loom-desktop");
+const driverProvider = process.env.LOOM_DESKTOP_E2E_DRIVER ?? "external";
 
 export const config = {
   runner: "local",
@@ -12,7 +13,7 @@ export const config = {
   }],
   services: [["@wdio/tauri-service", {
     appBinaryPath: application,
-    driverProvider: "external",
+    driverProvider,
     autoInstallTauriDriver: false,
     captureBackendLogs: true,
     captureFrontendLogs: true,
