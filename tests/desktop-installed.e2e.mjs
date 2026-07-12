@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import { createServer } from "node:http";
+import { promisify } from "node:util";
 import { browser, $ } from "@wdio/globals";
 import { LOOM_CLIENT_CAPABILITIES } from "../packages/loom-api/dist/index.js";
 
+const execFileAsync = promisify(execFile);
 const ACCESS_TOKEN = `installed-e2e-${randomUUID()}`;
 const PROFILE_KEY = "loom.desktop.profiles.v2";
 const PROJECT = "installed-e2e";
@@ -55,7 +58,7 @@ describe("installed Loom Desktop", () => {
     assert.match(callbackUrl ?? "", /^loom:\/\/auth\/callback\?code=/);
 
     await browser.execute(() => document.querySelector(".error-banner button")?.click());
-    await browser.tauri.triggerDeeplink(callbackUrl);
+    await triggerInstalledDeeplink(callbackUrl);
     await browser.waitUntil(async () => {
       if (await $(".health.ok").isDisplayed()) return true;
       const error = await $(".error-banner");
@@ -104,6 +107,24 @@ async function setInput(label, value) {
   const input = await $(`//label[contains(normalize-space(.),'${label}')]/input`);
   await input.waitForDisplayed();
   await input.setValue(value);
+}
+
+async function triggerInstalledDeeplink(url) {
+  if (process.env.LOOM_DESKTOP_E2E_DRIVER !== "embedded") {
+    await browser.tauri.triggerDeeplink(url);
+    return;
+  }
+  if (process.platform === "darwin") {
+    await execFileAsync("open", ["--env", "TAURI_WEBDRIVER_PORT=4446", url]);
+    return;
+  }
+  if (process.platform === "win32") {
+    await execFileAsync("rundll32.exe", ["url.dll,FileProtocolHandler", url], {
+      env: { ...process.env, TAURI_WEBDRIVER_PORT: "4446" },
+    });
+    return;
+  }
+  throw new Error(`No installed deep-link launcher for ${process.platform}`);
 }
 
 async function startFixture() {

@@ -173,7 +173,7 @@ jobs:
             Select-Object -First 1
           if (-not $entry) { throw "Loom Desktop uninstall registration was not found" }
           $candidates = @()
-          if ($entry.InstallLocation) { $candidates += Join-Path $entry.InstallLocation "loom-desktop.exe" }
+          if ($entry.InstallLocation) { $candidates += Join-Path $entry.InstallLocation.Trim('"') "loom-desktop.exe" }
           if ($entry.DisplayIcon) { $candidates += ($entry.DisplayIcon.Trim('"') -replace ',\d+$', '') }
           $binary = $candidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
           if (-not $binary) {
