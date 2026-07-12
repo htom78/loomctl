@@ -5,6 +5,7 @@ import { registerBrainCommands } from "./cli/commands/brain.js";
 import { registerHarnessAgentGitServiceCompatCommands, registerHarnessAgentGitServiceProvisioningCommands } from "./cli/commands/harness-ags.js";
 import { registerHarnessCutoverReportCommand, registerHarnessPreflightCommands } from "./cli/commands/harness-preflight.js";
 import { registerHarnessRunCommand } from "./cli/commands/harness-run.js";
+import { registerRunCommand } from "./cli/commands/run.js";
 import { registerHarnessRehearsalCommand, registerHarnessServeCommands, registerHarnessSmokeCommand } from "./cli/commands/harness-serve.js";
 import { registerHooksInstallCommand, registerWorkspaceProjectGoalCommands } from "./cli/commands/workspace-project.js";
 
@@ -20,6 +21,7 @@ program
   )
   .version("0.1.0");
 
+registerRunCommand(program);
 registerWorkspaceProjectGoalCommands(program);
 registerBrainCommands(program);
 registerHooksInstallCommand(program);
