@@ -138,6 +138,10 @@ Estimated effort: 3-5 person-weeks.
 - [x] Support enterprise custom CAs without disabling TLS verification.
 - [x] Add scrubbed client diagnostics and opt-in crash reporting.
 - [x] Add signed update channels (`beta` and `stable`) with rollback metadata.
+      The repository updater identity matches the embedded public key, signs a
+      real AppImage updater, passes independent signature verification, and
+      rejects a tampered artifact
+      ([run 29201931618](https://github.com/htom78/loomctl/actions/runs/29201931618)).
 - [ ] Add macOS signing/notarization and Apple Silicon/Intel artifacts.
       Unsigned `.app` and DMG packaging passes on both architectures
       ([run 29195378268](https://github.com/htom78/loomctl/actions/runs/29195378268));
@@ -162,8 +166,8 @@ Estimated effort: 3-5 person-weeks.
       pass on macOS ARM/Intel, Windows ARM/x64, and Linux. The Linux
       installed-app workflow passes
       ([run 29200854687](https://github.com/htom78/loomctl/actions/runs/29200854687));
-      macOS/Windows installed-app coverage and signed update and rollback E2E
-      remain release gates.
+      macOS/Windows installed-app coverage and signed update installation and
+      rollback E2E remain release gates.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
       The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
       it only after every requested platform verification passes, but no signed

@@ -92,6 +92,14 @@ The WebDriver Rust plugin, WebView bridge, and capability are all feature-gated;
 normal CI fails if production frontend or Rust dependency output contains that
 instrumentation.
 
+The separate **Desktop Updater Signing Verification** workflow uses the
+repository updater identity to build a real AppImage updater. Tauri rejects a
+private key that does not match the public key embedded in the application, and
+an independent verifier checks the generated `.sig` while also proving that a
+single-byte artifact modification is rejected. The gate passes in
+[run 29201931618](https://github.com/htom78/loomctl/actions/runs/29201931618).
+It verifies signing integrity, not update installation or rollback behavior.
+
 Release jobs additionally require:
 
 - macOS `codesign --verify`, Gatekeeper `spctl --assess`, and notarization staple
