@@ -55,12 +55,13 @@ jobs:
           shopt -s nullglob
           signatures=(apps/desktop/src-tauri/target/release/bundle/appimage/*.sig)
           test "${#signatures[@]}" -eq 1
-          artifact="${signatures[0]%.sig}"
+          signature=$(realpath "${signatures[0]}")
+          artifact=$(realpath "${signatures[0]%.sig}")
           test -s "$artifact"
-          test -s "${signatures[0]}"
+          test -s "$signature"
           printf 'LOOM_TEST_UPDATE_ARTIFACT=%s\n' "$artifact" >> "$GITHUB_ENV"
-          printf 'LOOM_TEST_UPDATE_SIGNATURE=%s\n' "${signatures[0]}" >> "$GITHUB_ENV"
+          printf 'LOOM_TEST_UPDATE_SIGNATURE=%s\n' "$signature" >> "$GITHUB_ENV"
       - name: Verify signature and reject tampered artifact
         env:
           LOOM_TEST_UPDATE_PUBLIC_KEY: ${{ steps.public-key.outputs.value }}
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml updates::tests::signed_updater_artifact_matches_embedded_key -- --ignored --exact
+        run: cargo test --release --manifest-path apps/desktop/src-tauri/Cargo.toml updates::tests::signed_updater_artifact_matches_embedded_key -- --ignored --exact
