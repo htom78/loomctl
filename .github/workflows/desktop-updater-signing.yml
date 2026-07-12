@@ -1,0 +1,66 @@
+name: Desktop Updater Signing Verification
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - package.json
+      - package-lock.json
+      - .github/workflows/desktop-updater-signing.yml
+
+permissions:
+  contents: read
+
+jobs:
+  linux-signed-updater:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    env:
+      CI: "true"
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require updater signing identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$TAURI_SIGNING_PRIVATE_KEY"
+          test -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+      - name: Install Tauri system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - run: npm run api:build
+      - name: Build signed AppImage updater
+        run: npm run tauri --workspace @loom/desktop -- build --ci --bundles appimage
+      - name: Read embedded updater public key
+        id: public-key
+        shell: bash
+        run: |
+          set -euo pipefail
+          value=$(jq -r '.plugins.updater.pubkey' apps/desktop/src-tauri/tauri.conf.json)
+          test -n "$value" && test "$value" != null
+          printf 'value=%s\n' "$value" >> "$GITHUB_OUTPUT"
+      - name: Locate signed updater artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          signatures=(apps/desktop/src-tauri/target/release/bundle/appimage/*.sig)
+          test "${#signatures[@]}" -eq 1
+          artifact="${signatures[0]%.sig}"
+          test -s "$artifact"
+          test -s "${signatures[0]}"
+          printf 'LOOM_TEST_UPDATE_ARTIFACT=%s\n' "$artifact" >> "$GITHUB_ENV"
+          printf 'LOOM_TEST_UPDATE_SIGNATURE=%s\n' "${signatures[0]}" >> "$GITHUB_ENV"
+      - name: Verify signature and reject tampered artifact
+        env:
+          LOOM_TEST_UPDATE_PUBLIC_KEY: ${{ steps.public-key.outputs.value }}
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml updates::tests::signed_updater_artifact_matches_embedded_key -- --ignored --exact

@@ -141,6 +141,9 @@ fn is_older_version(candidate: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use minisign_verify::{PublicKey, Signature};
+    use std::{env, fs};
 
     #[test]
     fn update_channels_are_fixed_to_project_releases() {
@@ -154,5 +157,36 @@ mod tests {
         assert!(channel_url("stable", "rollback-latest.json").is_ok());
         assert!(is_older_version("1.9.0", "1.10.0"));
         assert!(!is_older_version("invalid", "1.10.0"));
+    }
+
+    #[test]
+    #[ignore = "requires a signed updater artifact"]
+    fn signed_updater_artifact_matches_embedded_key() {
+        let artifact = fs::read(env::var("LOOM_TEST_UPDATE_ARTIFACT").expect("artifact path"))
+            .expect("read artifact");
+        let signature =
+            fs::read_to_string(env::var("LOOM_TEST_UPDATE_SIGNATURE").expect("signature path"))
+                .expect("read signature");
+        let public_key = env::var("LOOM_TEST_UPDATE_PUBLIC_KEY").expect("public key");
+
+        assert!(!artifact.is_empty(), "artifact must not be empty");
+        verify_update_signature(&artifact, &signature, &public_key)
+            .expect("signed updater artifact must verify");
+
+        let mut tampered = artifact;
+        let index = tampered.len() / 2;
+        tampered[index] ^= 1;
+        assert!(verify_update_signature(&tampered, &signature, &public_key).is_err());
+    }
+
+    fn verify_update_signature(
+        artifact: &[u8],
+        signature: &str,
+        public_key: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let public_key = String::from_utf8(STANDARD.decode(public_key.trim())?)?;
+        let signature = String::from_utf8(STANDARD.decode(signature.trim())?)?;
+        PublicKey::decode(&public_key)?.verify(artifact, &Signature::decode(&signature)?, true)?;
+        Ok(())
     }
 }

@@ -2312,6 +2312,7 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "keyring",
+ "minisign-verify",
  "openidconnect",
  "rcgen",
  "regex",
