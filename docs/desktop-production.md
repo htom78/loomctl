@@ -99,7 +99,16 @@ private key that does not match the public key embedded in the application, and
 an independent verifier checks the generated `.sig` while also proving that a
 single-byte artifact modification is rejected. The gate passes in
 [run 29201931618](https://github.com/htom78/loomctl/actions/runs/29201931618).
-It verifies signing integrity, not update installation or rollback behavior.
+
+The separate **Desktop Signed Updater Install E2E** workflow builds signed,
+instrumented `0.1.0` and `0.2.0` AppImages with that same repository identity.
+It installs `0.1.0`, serves signed manifests and artifacts from a strictly
+feature-gated loopback fixture, installs `0.2.0`, restarts and verifies both the
+running version and installed file hash, then installs the signed downgrade,
+restarts, and proves the `0.1.0` version and original hash were restored. The
+production binary cannot compile the loopback override and retains only fixed
+HTTPS GitHub release endpoints. The gate passes in
+[run 29204463396](https://github.com/htom78/loomctl/actions/runs/29204463396).
 
 Release jobs additionally require:
 

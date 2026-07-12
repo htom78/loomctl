@@ -143,13 +143,14 @@ Estimated effort: 3-5 person-weeks.
       real AppImage updater, passes independent signature verification, and
       rejects a tampered artifact
       ([run 29201931618](https://github.com/htom78/loomctl/actions/runs/29201931618)).
-- [ ] Prove signed update installation and rollback against installed artifacts.
+- [x] Prove signed update installation and rollback against installed artifacts.
       Build instrumented `0.1.0` and `0.2.0` AppImages with the repository
       updater identity, install `0.1.0`, update to `0.2.0` from a feature-gated
       loopback fixture, restart and verify the running version and installed
       file hash, then install the signed rollback, restart, and verify `0.1.0`
       and the original hash are restored. Production builds must retain their
-      fixed HTTPS GitHub release endpoints.
+      fixed HTTPS GitHub release endpoints
+      ([run 29204463396](https://github.com/htom78/loomctl/actions/runs/29204463396)).
 - [ ] Add macOS signing/notarization and Apple Silicon/Intel artifacts.
       Unsigned `.app` and DMG packaging passes on both architectures
       ([run 29195378268](https://github.com/htom78/loomctl/actions/runs/29195378268));
@@ -173,8 +174,12 @@ Estimated effort: 3-5 person-weeks.
       fixtures. Linux, macOS ARM/Intel, and Windows x64/ARM installed-app jobs
       pass
       ([run 29203147902](https://github.com/htom78/loomctl/actions/runs/29203147902)),
-      and normal production bundles exclude WebDriver instrumentation. Signed
-      update installation and rollback E2E remain release gates.
+      and normal production bundles exclude WebDriver instrumentation. Linux
+      also passes real signed AppImage update installation, restart, downgrade,
+      and hash restoration
+      ([run 29204463396](https://github.com/htom78/loomctl/actions/runs/29204463396));
+      native signed update/rollback coverage on macOS and Windows remains tied
+      to their external signing identities.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
       The `tauri-apps/tauri-action@v1` workflow builds into a draft and publishes
       it only after every requested platform verification passes, but no signed
