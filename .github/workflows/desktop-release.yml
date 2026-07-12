@@ -74,8 +74,8 @@ jobs:
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -109,7 +109,7 @@ jobs:
           tagName: desktop-${{ inputs.channel }}-v__VERSION__
           releaseName: Loom Desktop ${{ inputs.channel }} v__VERSION__
           releaseBody: Signed Loom Desktop release for the ${{ inputs.channel }} channel.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: ${{ inputs.channel == 'beta' }}
           generateReleaseNotes: true
           retryAttempts: 2
@@ -146,13 +146,13 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf xvfb
       - run: npm ci
       - run: npm run api:build
       - uses: tauri-apps/tauri-action@v1
@@ -164,11 +164,13 @@ jobs:
           tagName: desktop-${{ inputs.channel }}-v__VERSION__
           releaseName: Loom Desktop ${{ inputs.channel }} v__VERSION__
           releaseBody: Signed Loom Desktop release for the ${{ inputs.channel }} channel.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: ${{ inputs.channel == 'beta' }}
           generateReleaseNotes: true
           retryAttempts: 2
           args: --bundles appimage,deb
+      - name: Verify Linux packages and startup
+        run: scripts/verify-linux-desktop-packages.sh
 
   promote-channel:
     needs: [desktop, linux]
@@ -177,9 +179,13 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Promote immutable release into channel metadata
         shell: bash
         run: |
           version=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
-          node scripts/promote-desktop-release.mjs "${{ inputs.channel }}" "desktop-${{ inputs.channel }}-v${version}"
+          tag="desktop-${{ inputs.channel }}-v${version}"
+          prerelease=false
+          if test "${{ inputs.channel }}" = beta; then prerelease=true; fi
+          gh release edit "$tag" --draft=false --prerelease="$prerelease"
+          node scripts/promote-desktop-release.mjs "${{ inputs.channel }}" "$tag"
