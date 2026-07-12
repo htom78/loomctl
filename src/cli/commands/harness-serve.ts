@@ -359,6 +359,27 @@ harness
         void stateBackend?.close().catch(() => undefined);
       });
       await new Promise<void>((resolve) => server.listen(port, serveOptions.host, resolve));
+
+      // Graceful shutdown: on SIGTERM/SIGINT (docker stop, k8s eviction, Ctrl-C)
+      // stop accepting connections and let in-flight requests finish, then the
+      // server's close handler aborts active runs, releases workspace sessions
+      // and admission claims, and shuts the state backend down cleanly instead
+      // of the process being hard-killed mid-run.
+      let shuttingDown = false;
+      const gracefulShutdown = (signal: NodeJS.Signals) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        console.error(`loom harness: received ${signal}, draining and shutting down`);
+        server.closeIdleConnections?.();
+        server.close(() => process.exit(0));
+        // Backstops: force-drop lingering connections, then hard-exit, so a stuck
+        // connection or run cannot block shutdown forever.
+        setTimeout(() => server.closeAllConnections?.(), 10_000).unref();
+        setTimeout(() => process.exit(0), 20_000).unref();
+      };
+      process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
+      process.once("SIGINT", () => gracefulShutdown("SIGINT"));
+
       const address = server.address();
       const actualPort = typeof address === "object" && address ? address.port : port;
       console.log(

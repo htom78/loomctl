@@ -103,6 +103,12 @@ loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
   `--rate-limit-trusted-proxy-hops <n>` so limiting keys on the real client's
   `X-Forwarded-For` hop instead of the shared proxy IP; it defaults to 0 (trust
   nobody, key on the socket peer) because `X-Forwarded-For` is client-spoofable.
+- `SIGTERM`/`SIGINT` (docker stop, k8s eviction, Ctrl-C) trigger graceful
+  shutdown: the server stops accepting connections, lets in-flight requests
+  finish, then aborts active runs, releases workspace sessions and admission
+  claims, and closes the state backend before exiting — rather than a hard kill
+  mid-run. Backstop timers force-close lingering connections so shutdown cannot
+  hang.
 
 For two or more instances, use PostgreSQL for durable metadata/audit and Redis
 for leases and queued-run claims:
