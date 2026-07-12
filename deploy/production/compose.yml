@@ -21,7 +21,7 @@ x-loom-common: &loom-common
     LOOM_MODEL_KEY: ${LOOM_MODEL_KEY}
     LOOM_CONTROL_PLANE_TOKEN: ${LOOM_CONTROL_PLANE_TOKEN}
     LOOM_GITEA_WEBHOOK_SECRET: ${LOOM_GITEA_WEBHOOK_SECRET}
-    LOOM_ADMIN_TOKEN: ${LOOM_ADMIN_TOKEN}
+    LOOM_OPERATOR_TOKEN: ${LOOM_OPERATOR_TOKEN}
   command:
     - harness
     - serve
@@ -49,6 +49,12 @@ x-loom-common: &loom-common
     - LOOM_GITEA_WEBHOOK_SECRET
     - --rate-limit-trusted-proxy-hops
     - "1"
+    # Operator key gating the cross-tenant /status and /metrics views. Without a
+    # configured status key these endpoints are OPEN — Prometheus authenticates
+    # with this token (deploy/observability), and it keeps run metadata + host
+    # paths from leaking to anyone who reaches the instance.
+    - --tenant-key-env
+    - production=LOOM_OPERATOR_TOKEN:operator:admin
   depends_on:
     postgres:
       condition: service_healthy
@@ -105,8 +111,40 @@ services:
     volumes:
       - loom-redis:/data
 
+  # Observability stack. Opt-in: `docker compose --profile observability up -d`.
+  # Prometheus scrapes both instances' operator-gated /metrics with a bearer
+  # token read from ./secrets/loom_operator_token (create it with the same value
+  # as LOOM_ADMIN_TOKEN; the secrets/ dir is gitignored).
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: [observability]
+    restart: unless-stopped
+    depends_on: [loom-a, loom-b]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../observability/loom-alerts.yml:/etc/prometheus/loom-alerts.yml:ro
+      - ./secrets/loom_operator_token:/etc/prometheus/loom_operator_token:ro
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: [observability]
+    restart: unless-stopped
+    depends_on: [prometheus]
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - loom-grafana:/var/lib/grafana
+
 volumes:
   loom-a-workspaces:
   loom-b-workspaces:
   loom-postgres:
   loom-redis:
+  loom-grafana:

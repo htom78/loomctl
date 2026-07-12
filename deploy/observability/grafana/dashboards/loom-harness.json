@@ -1,0 +1,85 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "title": "Loom Harness",
+  "uid": "loom-harness",
+  "tags": ["loom"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Readiness (per instance)",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }] }, "overrides": [] },
+      "targets": [{ "expr": "loom_harness_ready", "legendFormat": "{{instance}}", "refId": "A" }]
+    },
+    {
+      "id": 2, "type": "stat", "title": "State backend ready",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }] }, "overrides": [] },
+      "targets": [{ "expr": "min(loom_harness_state_backend_ready)", "legendFormat": "state backend", "refId": "A" }]
+    },
+    {
+      "id": 3, "type": "stat", "title": "OIDC ready",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }] }, "overrides": [] },
+      "targets": [{ "expr": "min(loom_harness_oidc_ready)", "legendFormat": "oidc", "refId": "A" }]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Runs: active / queued",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(loom_harness_active_runs)", "legendFormat": "active", "refId": "A" },
+        { "expr": "sum(loom_harness_queued_runs)", "legendFormat": "queued", "refId": "B" }
+      ]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Queue oldest age (seconds)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [{ "expr": "max(loom_harness_queue_oldest_age_seconds)", "legendFormat": "oldest queued", "refId": "A" }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Capacity utilization",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        { "expr": "max(loom_harness_tenant_run_capacity_utilization)", "legendFormat": "tenant run cap", "refId": "A" },
+        { "expr": "max(loom_harness_workspace_session_capacity_utilization)", "legendFormat": "session cap", "refId": "B" }
+      ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Dependency probe latency (ms)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "ms", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        { "expr": "max(loom_harness_coordination_dependency_probe_latency_ms)", "legendFormat": "coordination", "refId": "A" },
+        { "expr": "max(loom_harness_metadata_dependency_probe_latency_ms)", "legendFormat": "metadata", "refId": "B" }
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Orphaned runs / expired leases / gates",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "targets": [
+        { "expr": "sum(loom_harness_orphaned_running_runs)", "legendFormat": "orphaned", "refId": "A" },
+        { "expr": "sum(loom_harness_expired_run_leases)", "legendFormat": "expired leases", "refId": "B" },
+        { "expr": "sum(loom_harness_review_required_runs)", "legendFormat": "review required", "refId": "C" },
+        { "expr": "sum(loom_harness_deployment_required_runs)", "legendFormat": "deploy required", "refId": "D" }
+      ]
+    }
+  ]
+}

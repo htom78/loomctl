@@ -1,0 +1,25 @@
+# Prometheus scrape config for the two production harness instances.
+# Scrapes the instances directly on the internal network (not through nginx) and
+# authenticates to the operator-gated /metrics with a bearer token read from a
+# file — never inline. The operator writes the token (same value as
+# LOOM_ADMIN_TOKEN) to the mounted credentials file; see deploy/production/README.md.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/loom-alerts.yml
+
+scrape_configs:
+  - job_name: loom-harness
+    metrics_path: /metrics
+    scheme: http
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/loom_operator_token
+    static_configs:
+      - targets:
+          - loom-a:8787
+          - loom-b:8787
+        labels:
+          service: loom-harness

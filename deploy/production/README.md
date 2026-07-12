@@ -69,7 +69,7 @@ readiness notes); treat the Docker executor as the interim boundary.
 ```bash
 curl https://YOUR_HOST/healthz                         # process is up
 curl https://YOUR_HOST/readyz                          # PG/Redis ready (503 if not)
-curl -H "authorization: Bearer $LOOM_ADMIN_TOKEN" https://YOUR_HOST/status
+curl -H "authorization: Bearer $LOOM_OPERATOR_TOKEN" https://YOUR_HOST/status
 ```
 
 Then walk [`../../docs/operator-runbook.md`](../../docs/operator-runbook.md) for
@@ -92,9 +92,32 @@ you need a tighter recovery point.
   (`--rate-limit-trusted-proxy-hops 1`) and nginx sets `X-Forwarded-For` to the
   real client IP. If you add more proxies in front, raise the hop count to match
   or the limiter will key on a proxy IP.
-- **Monitoring**: alert rules ship in
-  [`../observability/loom-alerts.yml`](../observability/loom-alerts.yml); wire a
-  Prometheus scrape of `/metrics` (admin-token gated) and Grafana yourself.
+- **Operator token gates /status and /metrics**: the serve command configures
+  an operator key (`--tenant-key-env production=LOOM_OPERATOR_TOKEN:...`). Without
+  a status key those cross-tenant views are **open**, leaking run metadata and
+  host paths — so `LOOM_OPERATOR_TOKEN` is required, not optional.
+- **Monitoring** (opt-in profile): a ready Prometheus + Grafana stack ships in
+  [`../observability/`](../observability/). Drop the operator token into the file
+  Prometheus reads, then start the profile:
+
+  ```bash
+  mkdir -p deploy/production/secrets
+  printf '%s' "$LOOM_OPERATOR_TOKEN" > deploy/production/secrets/loom_operator_token
+  docker compose -f deploy/production/compose.yml --env-file deploy/production/.env \
+    --profile observability up -d
+  ```
+
+  Prometheus (`:9090`) scrapes both instances' `/metrics` with that bearer token
+  and loads the alert rules in
+  [`../observability/loom-alerts.yml`](../observability/loom-alerts.yml); Grafana
+  (`:3000`, admin password `GRAFANA_ADMIN_PASSWORD`) auto-provisions the
+  datasource and the **Loom Harness** dashboard. The `secrets/` dir and `*.pem`
+  TLS material are gitignored.
+- **Backups / durability**: `backup.sh` takes an encrypted logical snapshot
+  (see §5). That is point-in-*backup*, not point-in-*time* — it does not replay
+  WAL. For a tight RPO, run Postgres on a managed service with PITR enabled, or
+  add continuous WAL archiving (e.g. pgBackRest / wal-g) to off-host storage; the
+  logical backup is the portable fallback, not the primary recovery path.
 - **Soak / load gate**: `npm run soak` drives a live instance with sustained
   concurrent mixed load and fails on any 5xx, any cross-tenant read, or runaway
   memory. Default run is short; before a real cutover run a long one against the
