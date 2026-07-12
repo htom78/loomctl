@@ -49,3 +49,21 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+
+  desktop-linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - run: npm run api:build
+      - run: npm run web:build --workspace @loom/desktop
+      - run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - run: npm run build --workspace @loom/desktop

@@ -80,7 +80,7 @@ configuration and generated operator reports are intentionally ignored by Git.
 loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
 ```
 
-## Loom Desktop Alpha
+## Loom Desktop
 
 The Tauri desktop client is in `apps/desktop`. It uses the typed
 `@loom/api` package, stores API tokens in the operating-system keychain, and
@@ -98,8 +98,11 @@ timelines, comments, human-gate decisions, bounded Monaco file editing and
 diffs, resumable xterm.js sessions, command/session history, collaborator
 presence, VAS review, Brain signals, and opening Coder IDE URLs externally. Its
 offline cache is bounded to non-sensitive metadata; all mutations, queues, and
-conflict authority remain server-owned. OIDC, replay/abandon, notifications,
-and signed installers remain tracked in [`TODO.md`](TODO.md).
+conflict authority remain server-owned. The native shell adds system-browser
+OIDC with PKCE, custom enterprise CA roots, native notifications, scrubbed
+diagnostics, strict navigation/CSP boundaries, and signed beta/stable update
+channels. Installer signing and production acceptance remain explicit gates in
+[`TODO.md`](TODO.md); see [`docs/desktop-production.md`](docs/desktop-production.md).
 
 - Async runs with queueing, cancel/pause/resume, idempotent create via
   `clientRequestId`, SSE event streaming, and a browser dashboard/workbench.
@@ -192,6 +195,7 @@ harness.
 - [`docs/disaster-recovery.md`](docs/disaster-recovery.md) — backup/restore/drill
 - [`docs/slo.md`](docs/slo.md) — service levels and alerts
 - [`docs/upstream-agent-git-service-integration.md`](docs/upstream-agent-git-service-integration.md) — AGS candidate provider
+- [`docs/desktop-production.md`](docs/desktop-production.md) — desktop security, signing, release, and acceptance gates
 - [`VISION.md`](VISION.md) — vision lock and MVP boundary
 
 ## Tests

@@ -1,10 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { isTauri } from "./desktop-runtime";
 
 const memory = new Map<string, string>();
-
-function isTauri(): boolean {
-  return "__TAURI_INTERNALS__" in window;
-}
 
 export async function saveToken(profileId: string, token: string): Promise<void> {
   if (isTauri()) await invoke("save_secret", { profileId, token });

@@ -1,0 +1,185 @@
+name: Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Signed update channel
+        required: true
+        default: beta
+        type: choice
+        options: [beta, stable]
+      include_linux:
+        description: Publish Linux after macOS and Windows gates are stable
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ inputs.channel }}
+  cancel-in-progress: false
+
+jobs:
+  signing-preflight:
+    runs-on: ubuntu-latest
+    env:
+      UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      UPDATER_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+    steps:
+      - name: Require updater and platform signing identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in UPDATER_KEY UPDATER_PASSWORD APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
+            test -n "${!name}" || { echo "Missing required signing secret: $name"; exit 1; }
+          done
+
+  desktop:
+    needs: signing-preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            platform: macos
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: macos
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: npm ci
+      - run: npm run api:build
+      - name: Import Windows signing certificate
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE)
+          $path = Join-Path $env:RUNNER_TEMP "loom-windows-signing.pfx"
+          [IO.File]::WriteAllBytes($path, $bytes)
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $certificate = Import-PfxCertificate -FilePath $path -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          $configPath = "apps/desktop/src-tauri/tauri.conf.json"
+          $config = Get-Content $configPath -Raw | ConvertFrom-Json
+          $config.bundle.windows | Add-Member -NotePropertyName certificateThumbprint -NotePropertyValue $certificate.Thumbprint -Force
+          $config | ConvertTo-Json -Depth 100 | Set-Content $configPath
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: npm run tauri
+          tagName: desktop-${{ inputs.channel }}-v__VERSION__
+          releaseName: Loom Desktop ${{ inputs.channel }} v__VERSION__
+          releaseBody: Signed Loom Desktop release for the ${{ inputs.channel }} channel.
+          releaseDraft: false
+          prerelease: ${{ inputs.channel == 'beta' }}
+          generateReleaseNotes: true
+          retryAttempts: 2
+          args: --target ${{ matrix.target }}
+      - name: Verify macOS signature and notarization
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          apps=(apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app)
+          dmgs=(apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          app=${apps[0]}
+          dmg=${dmgs[0]}
+          test -d "$app" && test -f "$dmg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$dmg"
+      - name: Verify Windows Authenticode signatures
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem apps/desktop/src-tauri/target -Recurse -File | Where-Object { $_.Extension -in '.exe', '.msi' }
+          if (-not $installers) { throw "No Windows installers were produced" }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature $installer.FullName
+            if ($signature.Status -ne 'Valid') { throw "Invalid signature: $($installer.FullName) ($($signature.Status))" }
+          }
+
+  linux:
+    if: inputs.include_linux
+    needs: desktop
+    runs-on: ubuntu-22.04
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - run: npm ci
+      - run: npm run api:build
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: npm run tauri
+          tagName: desktop-${{ inputs.channel }}-v__VERSION__
+          releaseName: Loom Desktop ${{ inputs.channel }} v__VERSION__
+          releaseBody: Signed Loom Desktop release for the ${{ inputs.channel }} channel.
+          releaseDraft: false
+          prerelease: ${{ inputs.channel == 'beta' }}
+          generateReleaseNotes: true
+          retryAttempts: 2
+          args: --bundles appimage,deb
+
+  promote-channel:
+    needs: [desktop, linux]
+    if: ${{ always() && needs.desktop.result == 'success' && (needs.linux.result == 'success' || needs.linux.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Promote immutable release into channel metadata
+        shell: bash
+        run: |
+          version=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
+          node scripts/promote-desktop-release.mjs "${{ inputs.channel }}" "desktop-${{ inputs.channel }}-v${version}"

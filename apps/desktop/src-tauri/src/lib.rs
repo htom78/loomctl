@@ -1,59 +1,88 @@
-const KEYRING_SERVICE: &str = "dev.loom.desktop";
+mod auth;
+mod credentials;
+mod diagnostics;
+mod native_http;
+mod security;
+mod updates;
+
+use tauri::Manager;
 
 #[tauri::command]
-fn save_secret(profile_id: String, token: String) -> Result<(), String> {
-    validate_profile_id(&profile_id)?;
-    if token.trim().is_empty() {
-        return Err("token cannot be empty".into());
-    }
-    keyring::Entry::new(KEYRING_SERVICE, &profile_id)
-        .map_err(redacted_keyring_error)?
-        .set_password(&token)
-        .map_err(redacted_keyring_error)
+fn open_external_url(url: String) -> Result<(), String> {
+    let url = security::validate_external_url(&url)?;
+    tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
+        .map_err(|_| "external URL could not be opened".into())
 }
 
-#[tauri::command]
-fn load_secret(profile_id: String) -> Result<Option<String>, String> {
-    validate_profile_id(&profile_id)?;
-    match keyring::Entry::new(KEYRING_SERVICE, &profile_id)
-        .map_err(redacted_keyring_error)?
-        .get_password()
-    {
-        Ok(token) => Ok(Some(token)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(redacted_keyring_error(error)),
-    }
-}
-
-#[tauri::command]
-fn delete_secret(profile_id: String) -> Result<(), String> {
-    validate_profile_id(&profile_id)?;
-    match keyring::Entry::new(KEYRING_SERVICE, &profile_id)
-        .map_err(redacted_keyring_error)?
-        .delete_credential()
-    {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(redacted_keyring_error(error)),
-    }
-}
-
-fn validate_profile_id(value: &str) -> Result<(), String> {
-    if value.len() >= 8 && value.len() <= 128 && value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') {
-        Ok(())
-    } else {
-        Err("invalid profile id".into())
-    }
-}
-
-fn redacted_keyring_error(_: keyring::Error) -> String {
-    "operating system credential store operation failed".into()
+fn internal_navigation(url: &url::Url) -> bool {
+    let packaged = (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+        || (matches!(url.scheme(), "http" | "https") && url.host_str() == Some("tauri.localhost"));
+    let development = cfg!(debug_assertions)
+        && url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.port() == Some(1420);
+    packaged || development
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![save_secret, load_secret, delete_secret])
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+    builder
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(native_http::HttpState::default())
+        .manage(auth::OidcState::default())
+        .manage(diagnostics::DiagnosticsState::default())
+        .manage(updates::UpdateState::default())
+        .setup(|app| {
+            diagnostics::initialize(
+                app.handle(),
+                app.state::<diagnostics::DiagnosticsState>().inner(),
+            )?;
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .ok_or("main window configuration is missing")?;
+            tauri::WebviewWindowBuilder::from_config(app, config)?
+                .on_navigation(internal_navigation)
+                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+                .build()?;
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            credentials::save_secret,
+            credentials::load_secret,
+            credentials::delete_secret,
+            native_http::configure_http_profile,
+            native_http::http_request,
+            native_http::start_http_stream,
+            native_http::cancel_http_stream,
+            auth::start_oidc_login,
+            auth::complete_oidc_login,
+            diagnostics::record_diagnostic,
+            diagnostics::diagnostic_report,
+            diagnostics::submit_pending_crash,
+            updates::check_update,
+            updates::install_update,
+            updates::rollback_metadata,
+            open_external_url,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Loom Desktop");
 }

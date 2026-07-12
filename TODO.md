@@ -66,9 +66,9 @@ Acceptance gate:
 - [x] A standalone test client can authenticate, list projects/runs, create an
       idempotent run, follow its event stream, and reconnect without losing or
       duplicating events.
-- [ ] No API token appears in URLs, logs, crash output, audit, or run evidence.
-      Header-only transport is tested; explicit desktop crash/diagnostic
-      redaction tests remain.
+- [x] No API token appears in URLs, logs, crash output, audit, or run evidence.
+      Header-only native transport rejects secret-bearing query parameters;
+      desktop crash/diagnostic payloads contain only bounded structured fields.
 
 ## Phase 1 - Loom Desktop MVP
 
@@ -78,7 +78,7 @@ Estimated effort: 4-6 person-weeks after Phase 0.
 - [x] Support multiple named Loom server profiles and tenant selection.
 - [x] Store API credentials in OS-native secure storage; never use WebView
       `localStorage` for long-lived credentials.
-- [ ] Implement system-browser OIDC Authorization Code + PKCE login with a
+- [x] Implement system-browser OIDC Authorization Code + PKCE login with a
       signed `loom://auth/callback` deep link.
 - [x] Implement project and run lists, run creation, queue state, event timeline,
       comments, pause, resume, and cancel controls.
@@ -86,8 +86,8 @@ Estimated effort: 4-6 person-weeks after Phase 0.
 - [x] Implement review and deployment-gate decisions.
 - [ ] Add review claims, diff, handoff package, and PR evidence views.
 - [x] Open Coder IDE URLs externally with the official Tauri opener plugin.
-- [ ] Add preview URLs and Coder/VS Code workspace links.
-- [ ] Add native notifications for run completion, failed verification,
+- [x] Add preview URLs and Coder/VS Code workspace links.
+- [x] Add native notifications for run completion, failed verification,
       pending review, and pending deployment.
 - [ ] Add macOS and Windows development builds and smoke tests.
 
@@ -125,17 +125,25 @@ Acceptance gate:
 
 Estimated effort: 3-5 person-weeks.
 
-- [ ] Enforce a minimal Tauri capability allowlist and strict Content Security
+- [x] Enforce a minimal Tauri capability allowlist and strict Content Security
       Policy; reject arbitrary remote navigation and untrusted deep links.
-- [ ] Support enterprise custom CAs without disabling TLS verification.
-- [ ] Add scrubbed client diagnostics and opt-in crash reporting.
-- [ ] Add signed update channels (`beta` and `stable`) with rollback metadata.
+- [x] Support enterprise custom CAs without disabling TLS verification.
+- [x] Add scrubbed client diagnostics and opt-in crash reporting.
+- [x] Add signed update channels (`beta` and `stable`) with rollback metadata.
 - [ ] Add macOS signing/notarization and Apple Silicon/Intel artifacts.
+      The official Tauri release matrix and security checks are ready; Apple
+      Developer certificate/notarization secrets and a real release are still required.
 - [ ] Add Windows code signing and x64/arm64 installers.
+      The native runner matrix, certificate import, and Authenticode checks are
+      ready; a Windows code-signing certificate and a real release are still required.
 - [ ] Add Linux AppImage/deb builds after macOS and Windows are stable.
 - [ ] Add cross-platform end-to-end tests for login, SSE reconnect, terminal,
       review gate, update verification, and credential persistence.
+      Cross-platform contract/native build verification is wired; installed-app
+      OIDC, keychain persistence, and signed-update E2E remain release gates.
 - [ ] Publish artifacts through GitHub Releases using the official Tauri action.
+      The `tauri-apps/tauri-action@v1` workflow is ready but no signed release
+      may be published until the platform signing secrets pass preflight.
 
 Acceptance gate:
 
