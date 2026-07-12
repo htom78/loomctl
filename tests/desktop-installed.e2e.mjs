@@ -116,9 +116,9 @@ async function startFixture() {
     if (url.pathname === "/.well-known/openid-configuration") {
       return sendJson(response, {
         issuer,
-        authorization_endpoint: `${issuer}/authorize`,
-        token_endpoint: `${issuer}/token`,
-        jwks_uri: `${issuer}/jwks`,
+        authorization_endpoint: `${issuer}authorize`,
+        token_endpoint: `${issuer}token`,
+        jwks_uri: `${issuer}jwks`,
         response_types_supported: ["code"],
         subject_types_supported: ["public"],
         id_token_signing_alg_values_supported: ["RS256"],
@@ -153,7 +153,7 @@ async function startFixture() {
     }
     sendJson(response, { error: "not_found" }, 404);
   });
-  issuer = await listen(oidcServer);
+  issuer = `${await listen(oidcServer)}/`;
 
   const loomServer = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
