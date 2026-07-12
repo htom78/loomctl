@@ -92,8 +92,8 @@ describe("installed Loom Desktop", () => {
 
     await browser.reloadSession();
     await $(".health.ok").waitForDisplayed({ timeout: 20_000 });
-    const credentialPersisted = await browser.tauri.execute(
-      async ({ core }, id) => Boolean(await core.invoke("load_secret", { profileId: id })),
+    const credentialPersisted = await browser.execute(
+      async (id) => Boolean(await window.__TAURI__.core.invoke("load_secret", { profileId: id })),
       profileId,
     );
     assert.equal(credentialPersisted, true);
