@@ -80,6 +80,10 @@ interface HarnessVisionLock {
 }
 
 interface HarnessServerStatus {
+  api: {
+    version: typeof LOOM_API_VERSION;
+    capabilities: string[];
+  };
   server: {
     workspaceRoot: string;
     profile?: string;
@@ -322,6 +326,19 @@ interface OrphanedRunningRunResourceStatus {
   runDir: string;
 }
 const CONTROL_PLANE_GIT_TRANSPORT_SAMPLE_REPO = "team/smoke";
+const LOOM_API_VERSION = "v1" as const;
+const LOOM_API_CAPABILITIES = [
+  "tenant-status",
+  "project-list",
+  "run-list",
+  "run-create-idempotent",
+  "run-events-sse",
+  "run-replay",
+  "run-comments",
+  "run-control",
+  "human-gates",
+  "workspace-links",
+] as const;
 const ONLINE_SANDBOX_REQUIRED_TENANT_ROLES: TenantRole[] = ["admin", "developer", "viewer"];
 const HARNESS_VISION_LOCK: HarnessVisionLock = {
   ...SHARED_HARNESS_VISION_LOCK,
@@ -534,6 +551,7 @@ async function harnessServerStatus(
   const activeRunResourceDetails = activeRunResourceStatuses(options, activeRunDetails);
   const controlPlaneDiscovery = await controlPlaneDiscoveryStatus(options);
   return {
+    api: loomApiContract(),
     server: {
       workspaceRoot,
       profile: options.profile,
@@ -744,6 +762,7 @@ async function harnessTenantServerStatus(
   const controlPlaneDiscovery = await controlPlaneDiscoveryStatus(options, tenant);
   return {
     tenant,
+    api: loomApiContract(),
     server: {
       startedAt,
       uptimeMs: Math.max(0, Date.now() - Date.parse(startedAt)),
@@ -770,6 +789,13 @@ async function harnessTenantServerStatus(
         .map(publicOrphanedRunningRunStatus),
       queuedRunDetails: await queuedRunResourceStatuses(options, activeRunSlots, activeWorkspaces, queuedRuns, tenant),
     }),
+  };
+}
+
+function loomApiContract(): { version: typeof LOOM_API_VERSION; capabilities: string[] } {
+  return {
+    version: LOOM_API_VERSION,
+    capabilities: [...LOOM_API_CAPABILITIES],
   };
 }
 
@@ -1571,4 +1597,4 @@ async function policyStatusAccessKeys(workspaceRoot: string, options: HarnessSer
   return keys;
 }
 
-export { HarnessControlPlaneStatus, SanitizedTenantControlPlaneIdentity, ActiveRunResourceStatus, HarnessVisionLock, HarnessServerStatus, HarnessProfileReadiness, HarnessStateBackendStatus, HarnessIdentityStatus, QueuedRunResourceStatus, OrphanedRunningRunResourceStatus, activeRunResourceStatuses, statusActiveRunDetails, queuedRunResourceStatus, harnessServerStatus, harnessTenantServerStatus, harnessControlPlaneStatus, controlPlaneProviderName, controlPlaneIssueUrl, publicControlPlaneBaseUrl, publicUrl, requireSafeLocalExecutorOptions, serverHealth, serverReadiness, serverMetrics, upsertTenantControlPlaneIdentity, controlPlaneProviderNameField, tenantControlPlaneIdentityKey, requireServerStatusAccess };
+export { LOOM_API_VERSION, LOOM_API_CAPABILITIES, HarnessControlPlaneStatus, SanitizedTenantControlPlaneIdentity, ActiveRunResourceStatus, HarnessVisionLock, HarnessServerStatus, HarnessProfileReadiness, HarnessStateBackendStatus, HarnessIdentityStatus, QueuedRunResourceStatus, OrphanedRunningRunResourceStatus, activeRunResourceStatuses, statusActiveRunDetails, queuedRunResourceStatus, harnessServerStatus, harnessTenantServerStatus, harnessControlPlaneStatus, controlPlaneProviderName, controlPlaneIssueUrl, publicControlPlaneBaseUrl, publicUrl, requireSafeLocalExecutorOptions, serverHealth, serverReadiness, serverMetrics, upsertTenantControlPlaneIdentity, controlPlaneProviderNameField, tenantControlPlaneIdentityKey, requireServerStatusAccess };

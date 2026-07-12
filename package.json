@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "Operator CLI and HTTP control plane for a v3-style cloud agentic dev platform with a first-party harness loop.",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "bin": {
     "loom": "dist/index.js",
     "loomd": "dist/loomd.js"
@@ -17,6 +21,11 @@
     "staging:down": "docker compose -f deploy/staging/compose.yml down",
     "production:check": "npm run build && node scripts/production-check.mjs",
     "soak": "LOOM_SOAK=1 node --expose-gc --import tsx --test tests/soak.test.ts",
+    "desktop:dev": "npm run api:build && npm run dev --workspace @loom/desktop",
+    "desktop:build": "npm run api:build && npm run build --workspace @loom/desktop",
+    "desktop:bundle": "npm run api:build && npm run bundle --workspace @loom/desktop",
+    "desktop:tauri": "npm run tauri --workspace @loom/desktop",
+    "api:build": "npm run build --workspace @loom/api",
     "start": "node dist/index.js"
   },
   "dependencies": {

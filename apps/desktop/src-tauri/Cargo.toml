@@ -1,0 +1,20 @@
+[package]
+name = "loom-desktop"
+version = "0.1.0"
+description = "Loom agent workflow desktop client"
+authors = ["Loom contributors"]
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "loom_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"

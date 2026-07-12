@@ -19,8 +19,8 @@ The platform shape:
 - **Skill-evolution brain** — capture run signals, score skills, and open
   git-backed improvement PRs.
 
-Approved future work is tracked in [`TODO.md`](TODO.md), including the staged
-Tauri-based Loom Desktop client roadmap.
+Approved and completed work is tracked in [`TODO.md`](TODO.md), including the
+staged Tauri-based Loom Desktop client roadmap.
 
 ## Core guarantees
 
@@ -79,6 +79,24 @@ configuration and generated operator reports are intentionally ignored by Git.
 ```bash
 loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
 ```
+
+## Loom Desktop Alpha
+
+The first Tauri desktop client is in `apps/desktop`. It uses the typed
+`@loom/api` package, stores API tokens in the operating-system keychain, and
+keeps authenticated SSE credentials out of URLs.
+
+```bash
+npm run desktop:dev       # native development window
+npm run desktop:build     # production frontend + native executable
+npm run desktop:bundle    # platform installer/app bundle
+```
+
+Create a server profile with the Loom base URL, tenant, and API token. The
+alpha supports project/run navigation, run creation, live timelines, comments,
+pause/cancel/resume, human-gate decisions, and opening Coder IDE URLs externally.
+OIDC, replay/abandon, full review evidence, notifications, and signed installers
+remain tracked in [`TODO.md`](TODO.md).
 
 - Async runs with queueing, cancel/pause/resume, idempotent create via
   `clientRequestId`, SSE event streaming, and a browser dashboard/workbench.

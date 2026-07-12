@@ -254,6 +254,10 @@ type TenantAccess = TenantAuditActor & { modelKeyEnv?: string };
 
 interface TenantHarnessServerStatus {
   tenant: string;
+  api: {
+    version: string;
+    capabilities: string[];
+  };
   server: {
     startedAt: string;
     uptimeMs: number;

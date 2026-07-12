@@ -1,7 +1,8 @@
 # Loom Roadmap / To Do
 
-This file tracks work that is approved but not yet implemented. Completed
-platform behavior remains documented in `README.md`, `VISION.md`, and `docs/`.
+This file tracks the approved desktop target and its implementation status.
+Completed platform behavior remains documented in `README.md`, `VISION.md`,
+and `docs/`.
 
 ## Desktop Client Decision Lock
 
@@ -47,40 +48,45 @@ the application foundation unless this decision is explicitly revisited.
 
 Estimated effort: 1-2 person-weeks.
 
-- [ ] Extract a framework-neutral `packages/loom-api` TypeScript package from
+- [x] Extract a framework-neutral `packages/loom-api` TypeScript package from
       the hand-written Dashboard and Workbench API calls.
-- [ ] Define request, response, error, and SSE event schemas for the client-used
+- [x] Define request, response, error, and SSE event schemas for the client-used
       API surface.
-- [ ] Add `apiVersion` and capability negotiation to server and tenant status.
-- [ ] Implement reconnecting SSE over `fetch` + `ReadableStream` so credentials
+- [x] Add `apiVersion` and capability negotiation to server and tenant status.
+- [x] Implement reconnecting SSE over `fetch` + `ReadableStream` so credentials
       remain in the `Authorization` header instead of query strings.
-- [ ] Keep the existing browser Dashboard and Workbench using the same SDK or
-      contract fixtures so client and browser behavior cannot drift.
-- [ ] Add contract tests for version mismatch, reconnect-after-sequence,
+- [ ] Move the existing browser Dashboard and Workbench onto the same SDK or
+      shared request/response fixtures. The API capability catalog is shared by
+      contract test, but browser request behavior is not yet shared.
+- [x] Add contract tests for version mismatch, reconnect-after-sequence,
       duplicate event suppression, and unsupported capabilities.
 
 Acceptance gate:
 
-- [ ] A standalone test client can authenticate, list projects/runs, create an
+- [x] A standalone test client can authenticate, list projects/runs, create an
       idempotent run, follow its event stream, and reconnect without losing or
       duplicating events.
 - [ ] No API token appears in URLs, logs, crash output, audit, or run evidence.
+      Header-only transport is tested; explicit desktop crash/diagnostic
+      redaction tests remain.
 
 ## Phase 1 - Loom Desktop MVP
 
 Estimated effort: 4-6 person-weeks after Phase 0.
 
-- [ ] Create `apps/desktop` with Tauri 2, React, and TypeScript.
-- [ ] Support multiple named Loom server profiles and tenant selection.
-- [ ] Store API credentials in OS-native secure storage; never use WebView
+- [x] Create `apps/desktop` with Tauri 2, React, and TypeScript.
+- [x] Support multiple named Loom server profiles and tenant selection.
+- [x] Store API credentials in OS-native secure storage; never use WebView
       `localStorage` for long-lived credentials.
 - [ ] Implement system-browser OIDC Authorization Code + PKCE login with a
       signed `loom://auth/callback` deep link.
-- [ ] Implement project and run lists, run creation, queue state, event timeline,
-      replay, comments, pause, resume, cancel, and abandon controls.
-- [ ] Implement review claims, review decisions, deployment gates, diff,
-      handoff package, and PR evidence views.
-- [ ] Open Coder IDE/preview URLs and Coder/VS Code workspace links externally.
+- [x] Implement project and run lists, run creation, queue state, event timeline,
+      comments, pause, resume, and cancel controls.
+- [ ] Add replay and abandon controls.
+- [x] Implement review and deployment-gate decisions.
+- [ ] Add review claims, diff, handoff package, and PR evidence views.
+- [x] Open Coder IDE URLs externally with the official Tauri opener plugin.
+- [ ] Add preview URLs and Coder/VS Code workspace links.
 - [ ] Add native notifications for run completion, failed verification,
       pending review, and pending deployment.
 - [ ] Add macOS and Windows development builds and smoke tests.
@@ -162,4 +168,3 @@ enterprise rollout coordination.
   implementation in the MVP.
 - No mobile client in this roadmap; mobile requires a separate interaction and
   credential-lifecycle design.
-
