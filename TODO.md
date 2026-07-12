@@ -199,7 +199,8 @@ Estimated effort: 3-5 person-weeks.
       signed-webhook, PR/merge/comment, Brain ingest, and run-worktree contract.
       The self-contained production compose wires the same authentication and
       side-effect flags, while its Docker executor remains an interim runtime
-      and does not satisfy the final Coder acceptance gate.
+      and does not satisfy the final Coder acceptance gate
+      ([run 29209146956](https://github.com/htom78/loomctl/actions/runs/29209146956)).
 
 Acceptance gate:
 
