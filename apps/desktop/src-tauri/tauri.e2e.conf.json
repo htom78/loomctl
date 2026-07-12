@@ -8,7 +8,11 @@
           "identifier": "e2e-webdriver",
           "description": "Feature-gated WebDriver permissions for installed-app tests",
           "windows": ["main"],
-          "permissions": ["wdio:default"]
+          "permissions": [
+            "core:default",
+            "core:window:default",
+            "wdio:default"
+          ]
         }
       ]
     }
