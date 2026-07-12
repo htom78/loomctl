@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "pretest": "npm run build",
+    "pretest": "npm run build && npm run api:build",
     "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
     "staging:up": "node scripts/staging-up.mjs",
     "staging:smoke": "node scripts/staging-two-instance.mjs",
