@@ -338,6 +338,11 @@ const LOOM_API_CAPABILITIES = [
   "run-control",
   "human-gates",
   "workspace-links",
+  "workspace-files-cas",
+  "workspace-sessions-sse",
+  "collaborator-presence",
+  "vas-review",
+  "brain-signals",
 ] as const;
 const ONLINE_SANDBOX_REQUIRED_TENANT_ROLES: TenantRole[] = ["admin", "developer", "viewer"];
 const HARNESS_VISION_LOCK: HarnessVisionLock = {

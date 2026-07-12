@@ -16,7 +16,7 @@
     "dev": "tsx src/index.ts",
     "pretest": "npm run build",
     "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
-    "staging:up": "docker compose -f deploy/staging/compose.yml up -d --build",
+    "staging:up": "node scripts/staging-up.mjs",
     "staging:smoke": "node scripts/staging-two-instance.mjs",
     "staging:down": "docker compose -f deploy/staging/compose.yml down",
     "production:check": "npm run build && node scripts/production-check.mjs",

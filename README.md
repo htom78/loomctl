@@ -82,7 +82,7 @@ loom harness serve --workspace-root /tmp/loom-workspaces --port 8787
 
 ## Loom Desktop Alpha
 
-The first Tauri desktop client is in `apps/desktop`. It uses the typed
+The Tauri desktop client is in `apps/desktop`. It uses the typed
 `@loom/api` package, stores API tokens in the operating-system keychain, and
 keeps authenticated SSE credentials out of URLs.
 
@@ -93,10 +93,13 @@ npm run desktop:bundle    # platform installer/app bundle
 ```
 
 Create a server profile with the Loom base URL, tenant, and API token. The
-alpha supports project/run navigation, run creation, live timelines, comments,
-pause/cancel/resume, human-gate decisions, and opening Coder IDE URLs externally.
-OIDC, replay/abandon, full review evidence, notifications, and signed installers
-remain tracked in [`TODO.md`](TODO.md).
+client supports project/run navigation, run creation and control, live
+timelines, comments, human-gate decisions, bounded Monaco file editing and
+diffs, resumable xterm.js sessions, command/session history, collaborator
+presence, VAS review, Brain signals, and opening Coder IDE URLs externally. Its
+offline cache is bounded to non-sensitive metadata; all mutations, queues, and
+conflict authority remain server-owned. OIDC, replay/abandon, notifications,
+and signed installers remain tracked in [`TODO.md`](TODO.md).
 
 - Async runs with queueing, cancel/pause/resume, idempotent create via
   `clientRequestId`, SSE event streaming, and a browser dashboard/workbench.

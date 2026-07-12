@@ -11,6 +11,11 @@ export const LOOM_CLIENT_CAPABILITIES = [
   "run-control",
   "human-gates",
   "workspace-links",
+  "workspace-files-cas",
+  "workspace-sessions-sse",
+  "collaborator-presence",
+  "vas-review",
+  "brain-signals",
 ] as const;
 
 export type LoomClientCapability = typeof LOOM_CLIENT_CAPABILITIES[number];
@@ -102,6 +107,227 @@ export interface WorkspaceInfo {
     [key: string]: string | number | boolean | undefined;
   };
   [key: string]: unknown;
+}
+
+export interface WorkspaceRoute {
+  tenant: string;
+  project: string;
+  runId?: string;
+}
+
+export interface WorkspaceFileEntry {
+  name: string;
+  path: string;
+  kind: "directory" | "file";
+  size?: number;
+  updatedAt?: string;
+}
+
+export type WorkspaceFileResponse =
+  | { path: string; kind: "directory"; entries: WorkspaceFileEntry[] }
+  | { path: string; kind: "file"; size: number; updatedAt: string; content: string; previousPath?: string };
+
+export interface WorkspaceCommandResult {
+  command: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  stdoutTruncated?: true;
+  stderrTruncated?: true;
+}
+
+export interface WorkspaceCommandSummary extends WorkspaceCommandResult {
+  commandId: string;
+  tenant: string;
+  project: string;
+  runId?: string;
+  route: "project" | "run";
+  actor?: string;
+  role?: string;
+  clientId?: string;
+  startedAt: string;
+  endedAt: string;
+}
+
+export interface WorkspaceSessionSummary {
+  sessionId: string;
+  tenant: string;
+  project: string;
+  runId?: string;
+  route: "project" | "run";
+  command: string;
+  actor?: string;
+  role?: string;
+  clientId?: string;
+  status: "running" | "exited" | "orphaned";
+  startedAt: string;
+  lastActivityAt: string;
+  idleExpiresAt?: string;
+  endedAt?: string;
+  eventCount: number;
+  exitCode?: number;
+  signal?: string;
+}
+
+export interface WorkspaceSessionEvent {
+  seq: number;
+  ts: string;
+  type: "start" | "input" | "stop" | "stdout" | "stderr" | "exit";
+  data?: string;
+  dataBytes?: number;
+  dataTruncated?: true;
+  actor?: string;
+  role?: string;
+  clientId?: string;
+  exitCode?: number;
+  signal?: string;
+}
+
+export interface PresenceEntry {
+  tenant: string;
+  project: string;
+  runId?: string;
+  clientId: string;
+  label: string;
+  focus?: string;
+  actor?: string;
+  role?: string;
+  seenAt: string;
+  expiresAt: string;
+}
+
+export interface BrainSignalEntry {
+  seq: number;
+  ts: string;
+  source: "completed_run" | "workspace_signal" | "workspace_conflict" | "vas_learning";
+  actor?: string;
+  role?: string;
+  clientId?: string;
+  project?: string;
+  caseId?: string;
+  runId?: string;
+  operation?: string;
+  path?: string;
+  expectedUpdatedAt?: string;
+  observedUpdatedAt?: string;
+  activeEditorCount?: number;
+  status?: string;
+  outcome?: string;
+  failureKind?: string;
+  modelTotalTokens?: number;
+  modelCostUsd?: number;
+  learningCount?: number;
+  skillCount?: number;
+  [key: string]: unknown;
+}
+
+export interface BrainSignalFeed {
+  tenant: string;
+  count: number;
+  signals: BrainSignalEntry[];
+}
+
+export interface VasCaseClaim {
+  actor?: string;
+  role?: string;
+  clientId?: string;
+  claimedAt: string;
+}
+
+export interface VasCaseSummary {
+  id: string;
+  status?: string;
+  title?: string;
+  path: string;
+  reportPath?: string;
+  reviewCount?: number;
+  correctionCount?: number;
+  learningCount?: number;
+  runCount?: number;
+  reviewedRunCount?: number;
+  unreviewedRunCount?: number;
+  latestRunId?: string;
+  latestRunStatus?: string;
+  claim?: VasCaseClaim;
+  [key: string]: unknown;
+}
+
+export interface VasReviewQueueItem extends VasCaseSummary {
+  reasons: Array<"needs_review" | "needs_revision" | "unreviewed_run">;
+  links: Record<string, string>;
+}
+
+export interface VasReviewQueue {
+  project: string;
+  template: "vas-lite";
+  cases: VasReviewQueueItem[];
+}
+
+export interface VasLearning {
+  caseId: string;
+  text: string;
+  source?: string;
+  reviewDecision?: "approved" | "changes_requested";
+  reviewedAt?: string;
+  actor?: string;
+  role?: string;
+  clientId?: string;
+  runId?: string;
+}
+
+export interface VasLearningList {
+  project: string;
+  template: "vas-lite";
+  learnings: VasLearning[];
+}
+
+export interface VasCaseArtifacts {
+  project: string;
+  template: "vas-lite";
+  caseId: string;
+  contextPath: string;
+  reportPath: string;
+  reviewDraftPath: string;
+  context?: Record<string, unknown>;
+  report?: string;
+  reviewDraft?: Record<string, unknown>;
+}
+
+export interface VasReviewPackage {
+  project: string;
+  template: "vas-lite";
+  caseId: string;
+  case: VasCaseSummary;
+  artifacts: VasCaseArtifacts;
+  runs: Array<Record<string, unknown> & { runId: string; status: string }>;
+  reviews: Record<string, unknown>[];
+  corrections: Record<string, unknown>[];
+  learnings: VasLearning[];
+  issueCommentSeeds: Record<string, unknown>[];
+  auditTrail: Record<string, unknown>[];
+  links: Record<string, string>;
+}
+
+export interface VasReviewInput {
+  decision: "approved" | "changes_requested";
+  note?: string;
+  corrections?: string[];
+  learnings?: string[];
+  runId?: string;
+  clientId?: string;
+}
+
+export interface CreateVasCaseInput {
+  caseId: string;
+  title?: string;
+  source?: unknown;
+  repo?: string;
+  branch?: string;
+  baseBranch?: string;
+  issue?: string;
+  clientId?: string;
 }
 
 export interface CreateRunInput {
@@ -203,6 +429,141 @@ export class LoomClient {
     return this.request(`/tenants/${segment(tenant)}/runs/${segment(runId)}/workspace?project=${segment(project)}`);
   }
 
+  async createProject(tenant: string, project: string, template?: string): Promise<ProjectSummary> {
+    return this.request(`/tenants/${segment(tenant)}/projects`, {
+      method: "POST",
+      body: JSON.stringify({ project, template }),
+    });
+  }
+
+  async workspaceFiles(route: WorkspaceRoute, path = ""): Promise<WorkspaceFileResponse> {
+    return this.request(this.workspacePath(route, "files", { path }));
+  }
+
+  async writeWorkspaceFile(route: WorkspaceRoute, path: string, content: string, baseUpdatedAt?: string, clientId?: string): Promise<WorkspaceFileResponse> {
+    return this.request(this.workspacePath(route, "files"), {
+      method: "POST",
+      body: JSON.stringify({ path, content, baseUpdatedAt, clientId }),
+    });
+  }
+
+  async moveWorkspaceFile(route: WorkspaceRoute, fromPath: string, toPath: string, baseUpdatedAt?: string, clientId?: string): Promise<WorkspaceFileResponse> {
+    return this.request(this.workspacePath(route, "files/move"), {
+      method: "POST",
+      body: JSON.stringify({ fromPath, toPath, baseUpdatedAt, clientId }),
+    });
+  }
+
+  async deleteWorkspaceFile(route: WorkspaceRoute, path: string, baseUpdatedAt?: string, clientId?: string): Promise<void> {
+    await this.request(this.workspacePath(route, "files", { path }), {
+      method: "DELETE",
+      body: JSON.stringify({ baseUpdatedAt, clientId }),
+    });
+  }
+
+  async workspaceDiff(route: WorkspaceRoute): Promise<WorkspaceCommandResult> {
+    return this.request(this.workspacePath(route, "diff"));
+  }
+
+  async workspaceCommands(route: WorkspaceRoute): Promise<WorkspaceCommandSummary[]> {
+    return this.request(this.workspacePath(route, "commands"));
+  }
+
+  async runWorkspaceCommand(route: WorkspaceRoute, command: string, clientId?: string, timeoutMs?: number): Promise<WorkspaceCommandSummary> {
+    return this.request(this.workspacePath(route, "commands"), {
+      method: "POST",
+      body: JSON.stringify({ command, timeoutMs, clientId }),
+    });
+  }
+
+  async workspaceSessions(route: WorkspaceRoute): Promise<WorkspaceSessionSummary[]> {
+    return this.request(this.workspacePath(route, "sessions"));
+  }
+
+  async createWorkspaceSession(route: WorkspaceRoute, command: string, clientId?: string): Promise<WorkspaceSessionSummary> {
+    return this.request(this.workspacePath(route, "sessions"), {
+      method: "POST",
+      body: JSON.stringify({ command, clientId }),
+    });
+  }
+
+  async workspaceSessionEvents(route: WorkspaceRoute, sessionId: string, after = 0): Promise<WorkspaceSessionEvent[]> {
+    return this.request(this.workspacePath(route, `sessions/${segment(sessionId)}/events`, { after }));
+  }
+
+  async sendWorkspaceSessionInput(route: WorkspaceRoute, sessionId: string, input: string, clientId?: string): Promise<{ sessionId: string; accepted: true }> {
+    return this.request(this.workspacePath(route, `sessions/${segment(sessionId)}/input`), {
+      method: "POST",
+      body: JSON.stringify({ input, clientId }),
+    });
+  }
+
+  async stopWorkspaceSession(route: WorkspaceRoute, sessionId: string, clientId?: string): Promise<{ sessionId: string; status: string }> {
+    return this.request(this.workspacePath(route, `sessions/${segment(sessionId)}/stop`), {
+      method: "POST",
+      body: JSON.stringify({ clientId }),
+    });
+  }
+
+  async watchWorkspaceSession(route: WorkspaceRoute, sessionId: string, options: Omit<WatchRunEventsOptions, "onEvent"> & { onEvent(event: WorkspaceSessionEvent): void | Promise<void> }): Promise<number> {
+    return this.watchSequencedStream(
+      (after) => this.workspaceSessionStream(route, sessionId, after, options.signal),
+      options,
+    );
+  }
+
+  async presence(route: WorkspaceRoute): Promise<PresenceEntry[]> {
+    return this.request(this.workspacePath(route, "presence"));
+  }
+
+  async updatePresence(route: WorkspaceRoute, clientId: string, label: string, focus?: string): Promise<PresenceEntry> {
+    return this.request(this.workspacePath(route, "presence"), {
+      method: "POST",
+      body: JSON.stringify({ clientId, label, focus }),
+    });
+  }
+
+  async brainSignals(tenant: string, project?: string, runId?: string, after = 0, limit = 200): Promise<BrainSignalFeed> {
+    return this.request(this.pathWithQuery(`/tenants/${segment(tenant)}/brain/signals`, { project, runId, after, limit }));
+  }
+
+  async vasReviewQueue(tenant: string, project: string): Promise<VasReviewQueue> {
+    return this.request(this.vasPath(tenant, project, "review-queue"));
+  }
+
+  async createVasCase(tenant: string, project: string, input: CreateVasCaseInput): Promise<VasCaseSummary> {
+    return this.request(this.vasPath(tenant, project, "cases"), {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async vasLearnings(tenant: string, project: string): Promise<VasLearningList> {
+    return this.request(this.vasPath(tenant, project, "learnings"));
+  }
+
+  async vasCaseArtifacts(tenant: string, project: string, caseId: string): Promise<VasCaseArtifacts> {
+    return this.request(this.vasPath(tenant, project, `cases/${segment(caseId)}/artifacts`));
+  }
+
+  async vasReviewPackage(tenant: string, project: string, caseId: string): Promise<VasReviewPackage> {
+    return this.request(this.vasPath(tenant, project, `cases/${segment(caseId)}/review-package`));
+  }
+
+  async claimVasCase(tenant: string, project: string, caseId: string, action: "claim" | "release", clientId?: string): Promise<VasCaseSummary> {
+    return this.request(this.vasPath(tenant, project, `cases/${segment(caseId)}/claim`), {
+      method: "POST",
+      body: JSON.stringify({ action, clientId }),
+    });
+  }
+
+  async reviewVasCase(tenant: string, project: string, caseId: string, input: VasReviewInput): Promise<VasCaseSummary> {
+    return this.request(this.vasPath(tenant, project, `cases/${segment(caseId)}/review`), {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
   async createRun(input: CreateRunInput): Promise<RunSummary> {
     return this.request("/runs", {
       method: "POST",
@@ -242,14 +603,24 @@ export class LoomClient {
   }
 
   async watchRunEvents(tenant: string, project: string, runId: string, options: WatchRunEventsOptions): Promise<number> {
+    return this.watchSequencedStream(
+      (after) => this.events(tenant, project, runId, after, options.signal),
+      options,
+    );
+  }
+
+  private async watchSequencedStream<T extends { seq: number; type: string }>(
+    open: (after: number) => Promise<Response>,
+    options: Omit<WatchRunEventsOptions, "onEvent"> & { onEvent(event: T): void | Promise<void> },
+  ): Promise<number> {
     let after = options.after ?? 0;
     const reconnect = options.reconnect ?? true;
     do {
-      const response = await this.events(tenant, project, runId, after, options.signal);
+      const response = await open(after);
       if (!response.body) throw new LoomApiError("Loom event stream has no body", response.status);
       for await (const message of parseSseStream(response.body, options.signal)) {
         if (!message.data) continue;
-        const event = parseHarnessEvent(message);
+        const event = parseSequencedEvent<T>(message);
         if (event.seq <= after) continue;
         after = event.seq;
         await options.onEvent(event);
@@ -259,6 +630,13 @@ export class LoomClient {
       await abortableDelay(options.reconnectDelayMs ?? 500, options.signal);
     } while (!options.signal?.aborted);
     return after;
+  }
+
+  private async workspaceSessionStream(route: WorkspaceRoute, sessionId: string, after: number, signal?: AbortSignal): Promise<Response> {
+    return this.fetchChecked(`${this.baseUrl}${this.workspacePath(route, `sessions/${segment(sessionId)}/events/stream`, { after })}`, {
+      headers: this.headers(),
+      signal,
+    });
   }
 
   private async runAction<T>(tenant: string, project: string, runId: string, action: string, body: Record<string, unknown>): Promise<T> {
@@ -296,6 +674,24 @@ export class LoomClient {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [key, value] of Object.entries(query)) url.searchParams.set(key, String(value));
     return url.toString();
+  }
+
+  private workspacePath(route: WorkspaceRoute, leaf: string, query: Record<string, string | number | undefined> = {}): string {
+    const root = route.runId
+      ? `/tenants/${segment(route.tenant)}/runs/${segment(route.runId)}`
+      : `/tenants/${segment(route.tenant)}/projects/${segment(route.project)}`;
+    return this.pathWithQuery(`${root}/${leaf}`, route.runId ? { project: route.project, ...query } : query);
+  }
+
+  private vasPath(tenant: string, project: string, leaf: string): string {
+    return `/tenants/${segment(tenant)}/projects/${segment(project)}/vas/${leaf}`;
+  }
+
+  private pathWithQuery(path: string, query: Record<string, string | number | undefined>): string {
+    const values = Object.entries(query).filter((entry): entry is [string, string | number] => entry[1] !== undefined && entry[1] !== "");
+    if (!values.length) return path;
+    const search = new URLSearchParams(values.map(([key, value]) => [key, String(value)]));
+    return `${path}?${search.toString()}`;
   }
 }
 
@@ -342,12 +738,12 @@ function parseSseBlock(block: string): SseMessage | undefined {
   return data.length ? { id, event, data: data.join("\n") } : undefined;
 }
 
-function parseHarnessEvent(message: SseMessage): HarnessEvent {
+function parseSequencedEvent<T extends { seq: number; type: string }>(message: SseMessage): T {
   const value: unknown = JSON.parse(message.data);
   if (!isRecord(value) || typeof value.seq !== "number" || typeof value.type !== "string") {
     throw new Error("Invalid Loom harness event");
   }
-  return value as unknown as HarnessEvent;
+  return value as T;
 }
 
 function normalizeBaseUrl(value: string): string {

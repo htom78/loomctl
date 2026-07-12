@@ -102,22 +102,22 @@ Acceptance gate:
 
 Estimated effort: 4-6 person-weeks.
 
-- [ ] Integrate xterm.js with existing session create/input/stop and resumable
+- [x] Integrate xterm.js with existing session create/input/stop and resumable
       event-stream endpoints.
-- [ ] Add workspace/run file tree, safe text create/edit/move/delete, optimistic
+- [x] Add workspace/run file tree, safe text create/edit/move/delete, optimistic
       version checks, and conflict recovery.
-- [ ] Add Monaco for bounded text editing and diff inspection; keep full IDE
+- [x] Add Monaco for bounded text editing and diff inspection; keep full IDE
       features in Coder/VS Code.
-- [ ] Add command/session history, reopen actions, collaborator presence, and
+- [x] Add command/session history, reopen actions, collaborator presence, and
       same-file editing warnings.
-- [ ] Add VAS review queue, case artifacts, review packages, learning decisions,
+- [x] Add VAS review queue, case artifacts, review packages, learning decisions,
       and Brain signal views.
-- [ ] Add bounded offline metadata cache; queued mutations remain server-owned
+- [x] Add bounded offline metadata cache; queued mutations remain server-owned
       and are never fabricated locally.
 
 Acceptance gate:
 
-- [ ] Terminal reconnect, file conflict, multi-user presence, and cross-server
+- [x] Terminal reconnect, file conflict, multi-user presence, and cross-server
       run-control tests pass against the two-instance PostgreSQL/Redis staging
       stack.
 

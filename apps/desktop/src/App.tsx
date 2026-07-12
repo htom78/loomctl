@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity, AlertCircle, Check, ChevronRight, CircleStop, Code2, ExternalLink,
-  FolderGit2, GitPullRequest, LoaderCircle, MessageSquare, Pause, Play,
-  Plus, RefreshCw, RotateCcw, Send, Server, Settings2, ShieldCheck, X,
+  FolderGit2, GitPullRequest, Pause, Play, Plus, RefreshCw, RotateCcw,
+  Server, Settings2, ShieldCheck, X,
 } from "lucide-react";
 import {
   LoomApiError, LoomClient, type HarnessEvent, type ProjectSummary,
@@ -10,6 +10,8 @@ import {
 } from "@loom/api";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { deleteToken, loadToken, saveToken } from "./secure-store";
+import { cacheKey, isOfflineError, metadataCache } from "./cache";
+import { RunWorkbench } from "./RunWorkbench";
 
 interface Profile {
   id: string;
@@ -56,11 +58,11 @@ export function App() {
   const [selected, setSelected] = useState<RunSummary | null>(null);
   const [events, setEvents] = useState<HarnessEvent[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
+  const [offlineAt, setOfflineAt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [goal, setGoal] = useState("");
-  const [comment, setComment] = useState("");
   const streamAbort = useRef<AbortController | null>(null);
 
   const profile = profiles.find((item) => item.id === profileId) ?? null;
@@ -80,14 +82,26 @@ export function App() {
         throw new Error("Enter an API token to connect this profile.");
       }
       const nextClient = new LoomClient({ baseUrl: nextProfile.baseUrl, token });
-      const nextStatus = await nextClient.negotiate(nextProfile.tenant);
-      const nextProjects = await nextClient.projects(nextProfile.tenant);
+      try {
+        const nextStatus = await nextClient.negotiate(nextProfile.tenant);
+        const nextProjects = await nextClient.projects(nextProfile.tenant);
+        setStatus(nextStatus);
+        setProjects(nextProjects);
+        metadataCache.set(cacheKey(nextProfile.id, nextProfile.tenant, "projects"), nextProjects);
+        setProject((current) => current && nextProjects.some((item) => item.project === current)
+          ? current
+          : nextProjects[0]?.project ?? "");
+        setOfflineAt("");
+      } catch (nextError) {
+        const cached = metadataCache.get<ProjectSummary[]>(cacheKey(nextProfile.id, nextProfile.tenant, "projects"));
+        if (!cached || !isOfflineError(nextError)) throw nextError;
+        setStatus(null);
+        setProjects(cached.value);
+        setProject((current) => current && cached.value.some((item) => item.project === current) ? current : cached.value[0]?.project ?? "");
+        setOfflineAt(cached.storedAt);
+        setError(`Offline metadata from ${new Date(cached.storedAt).toLocaleString()}`);
+      }
       setClient(nextClient);
-      setStatus(nextStatus);
-      setProjects(nextProjects);
-      setProject((current) => current && nextProjects.some((item) => item.project === current)
-        ? current
-        : nextProjects[0]?.project ?? "");
       setShowSettings(false);
     } catch (nextError) {
       setClient(null);
@@ -109,9 +123,18 @@ export function App() {
     try {
       const nextRuns = await client.runs(profile.tenant, project);
       setRuns(nextRuns);
+      metadataCache.set(cacheKey(profile.id, profile.tenant, `runs:${project}`), nextRuns);
+      setOfflineAt("");
       if (selected) setSelected(nextRuns.find((run) => run.runId === selected.runId) ?? selected);
     } catch (nextError) {
-      setError(formatError(nextError));
+      const cached = metadataCache.get<RunSummary[]>(cacheKey(profile.id, profile.tenant, `runs:${project}`));
+      if (cached && isOfflineError(nextError)) {
+        setRuns(cached.value);
+        setOfflineAt(cached.storedAt);
+        setError(`Offline metadata from ${new Date(cached.storedAt).toLocaleString()}`);
+      } else {
+        setError(formatError(nextError));
+      }
     } finally {
       setLoading(false);
     }
@@ -217,22 +240,14 @@ export function App() {
     }
   }
 
-  async function sendComment() {
-    if (!client || !profile || !selected || !comment.trim()) return;
-    try {
-      await client.comment(profile.tenant, project, selected.runId, comment.trim(), CLIENT_ID);
-      setComment("");
-    } catch (nextError) {
-      setError(formatError(nextError));
-    }
-  }
+  const reportError = useCallback((nextError: unknown) => setError(formatError(nextError)), []);
 
   const ideUrl = workspace?.executor?.ideUrl;
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div className="brand"><div className="brand-mark">L</div><div><strong>Loom</strong><span>Desktop alpha</span></div></div>
+        <div className="brand"><div className="brand-mark">L</div><div><strong>Loom</strong><span>Development workbench</span></div></div>
         <nav className="profiles" aria-label="Server profiles">
           {profiles.map((item) => (
             <button key={item.id} className={item.id === profileId ? "profile active" : "profile"} onClick={() => setProfileId(item.id)}>
@@ -243,7 +258,7 @@ export function App() {
         <button className="sidebar-action" onClick={() => { setProfileId(""); setShowSettings(true); }}><Plus size={16}/> Add server</button>
         <div className="sidebar-footer">
           <button className="icon-text" onClick={() => setShowSettings(true)}><Settings2 size={16}/> Connection</button>
-          <div className={status?.readiness.ok ? "health ok" : "health"}><span/>{status ? (status.readiness.ok ? "Ready" : "Degraded") : "Offline"}</div>
+          <div className={status?.readiness.ok ? "health ok" : offlineAt ? "health cached" : "health"}><span/>{status ? (status.readiness.ok ? "Ready" : "Degraded") : offlineAt ? "Cached" : "Offline"}</div>
         </div>
       </aside>
 
@@ -288,11 +303,7 @@ export function App() {
                 <div><span className={`status-label status-${selected.status}`}>{selected.status.replaceAll("_", " ")}</span><h2>{selected.goal ?? "Run details"}</h2><code>{selected.runId}</code></div>
                 <RunActions run={selected} onAction={runAction}/>
               </div>
-              <div className="timeline" aria-live="polite">
-                {events.map((event) => <EventRow key={event.seq} event={event}/>) }
-                {!events.length && <div className="empty-state"><LoaderCircle size={22} className={!TERMINAL.has(selected.status) ? "spin" : ""}/><span>{TERMINAL.has(selected.status) ? "No event details loaded" : "Waiting for events"}</span></div>}
-              </div>
-              <div className="comment-box"><MessageSquare size={17}/><input value={comment} onChange={(event) => setComment(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void sendComment(); }} placeholder="Steer this run or leave review context"/><button title="Send comment" onClick={() => void sendComment()} disabled={!comment.trim()}><Send size={16}/></button></div>
+              {client && profile && <RunWorkbench client={client} profileId={profile.id} profileName={profile.name} tenant={profile.tenant} project={project} run={selected} events={events} clientId={CLIENT_ID} streamActive={!TERMINAL.has(selected.status)} onError={reportError}/>}
             </> : <div className="empty-detail"><ShieldCheck size={34}/><h2>Select a run</h2><p>Inspect the durable timeline, intervene, and decide human gates here.</p></div>}
           </section>
         </div>
@@ -337,14 +348,4 @@ function RunActions({ run, onAction }: { run: RunSummary; onAction(action: "paus
   if (run.status === "running") return <div className="button-group"><button className="secondary" onClick={() => onAction("pause")}><Pause size={15}/> Pause</button><button className="secondary danger" onClick={() => onAction("cancel")}><CircleStop size={15}/> Cancel</button></div>;
   if (run.status === "queued") return <button className="secondary danger" onClick={() => onAction("cancel")}><CircleStop size={15}/> Cancel</button>;
   return null;
-}
-
-function EventRow({ event }: { event: HarnessEvent }) {
-  const message = event.data && typeof event.data.message === "string"
-    ? event.data.message
-    : event.data && typeof event.data.command === "string"
-      ? event.data.command
-      : undefined;
-  const icon = event.type.includes("error") ? <AlertCircle size={15}/> : event.type.includes("pause") ? <Pause size={15}/> : event.type.includes("finish") ? <Check size={15}/> : <Activity size={15}/>;
-  return <div className="event-row"><div className={`event-icon event-${event.type}`}>{icon}</div><div><div className="event-meta"><strong>{event.type.replaceAll("_", " ")}</strong><span>#{event.seq}</span><time>{event.at ? new Date(event.at).toLocaleTimeString() : ""}</time></div>{message && <p>{message}</p>}</div></div>;
 }

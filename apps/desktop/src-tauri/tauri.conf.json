@@ -15,7 +15,7 @@
         "title": "Loom Desktop",
         "width": 1440,
         "height": 900,
-        "minWidth": 980,
+        "minWidth": 1180,
         "minHeight": 680,
         "resizable": true
       }

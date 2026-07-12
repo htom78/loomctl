@@ -14,11 +14,13 @@ const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,
 const holderProject = `lease-${suffix}`;
 const capacityProject = `capacity-${suffix}`;
 const recoveredProject = `recovered-${suffix}`;
+const phase2Project = `workbench-${suffix}`;
+const controlProject = `control-${suffix}`;
 
 const report = {
   schemaVersion: "loom-two-instance-staging/v1",
   startedAt: new Date().toISOString(),
-  projects: { holderProject, capacityProject, recoveredProject },
+  projects: { holderProject, capacityProject, recoveredProject, phase2Project, controlProject },
   checks: {},
 };
 
@@ -27,6 +29,76 @@ try {
   await waitForReady(firstUrl, aliceAdmin);
   await waitForReady(secondUrl, aliceAdmin);
   report.checks.readiness = true;
+
+  await json(firstUrl, "/tenants/alice/projects", {
+    method: "POST",
+    token: aliceAdmin,
+    body: { project: phase2Project },
+  });
+  const original = await json(firstUrl, `/tenants/alice/projects/${phase2Project}/files`, {
+    method: "POST",
+    token: aliceAdmin,
+    body: { path: "shared.txt", content: "version one\n", clientId: "editor-a" },
+  });
+  await json(firstUrl, `/tenants/alice/projects/${phase2Project}/presence`, {
+    method: "POST",
+    token: aliceAdmin,
+    body: { clientId: "editor-a", label: "Editor A", focus: "file:shared.txt" },
+  });
+  await sleep(10);
+  const current = await json(firstUrl, `/tenants/alice/projects/${phase2Project}/files`, {
+    method: "POST",
+    token: aliceAdmin,
+    body: { path: "shared.txt", content: "version two\n", baseUpdatedAt: original.body.updatedAt, clientId: "editor-a" },
+  });
+  assert.notEqual(current.body.updatedAt, original.body.updatedAt);
+  const conflict = await json(secondUrl, `/tenants/alice/projects/${phase2Project}/files`, {
+    method: "POST",
+    token: aliceAdmin,
+    expected: [409],
+    body: { path: "shared.txt", content: "stale edit\n", baseUpdatedAt: original.body.updatedAt, clientId: "editor-b" },
+  });
+  assert.ok(conflict.body.activeEditors.some((entry) => entry.clientId === "editor-a"));
+  const presence = await json(secondUrl, `/tenants/alice/projects/${phase2Project}/presence`, { token: aliceAdmin });
+  assert.ok(presence.body.some((entry) => entry.clientId === "editor-a" && entry.focus === "file:shared.txt"));
+  report.checks.crossInstanceFileConflict = true;
+  report.checks.crossInstancePresence = true;
+
+  const terminal = await json(firstUrl, `/tenants/alice/projects/${phase2Project}/sessions`, {
+    method: "POST",
+    token: aliceAdmin,
+    body: { command: "sh -lc 'printf phase2-first; sleep 1; printf phase2-second'", clientId: "terminal-a" },
+  });
+  const terminalEvents = await waitForSessionExit(secondUrl, aliceAdmin, phase2Project, terminal.body.sessionId);
+  const firstTerminalSeq = terminalEvents.find((event) => event.type === "stdout")?.seq ?? 0;
+  assert.ok(firstTerminalSeq > 0);
+  const resumedEvents = await sse(secondUrl, `/tenants/alice/projects/${phase2Project}/sessions/${terminal.body.sessionId}/events/stream?after=${firstTerminalSeq}`, aliceAdmin);
+  assert.ok(resumedEvents.length > 0);
+  assert.ok(resumedEvents.every((event) => event.seq > firstTerminalSeq));
+  assert.equal(new Set(resumedEvents.map((event) => event.seq)).size, resumedEvents.length);
+  assert.ok(resumedEvents.some((event) => event.type === "exit"));
+  report.checks.crossInstanceTerminalReconnect = true;
+
+  const controlled = await startRunWhenCapacityAvailable(firstUrl, {
+    async: true,
+    tenant: "alice",
+    project: controlProject,
+    goal: "cancel from peer server",
+    script: [
+      { message: "hold", actions: [{ toolName: "shell.exec", input: { command: "sleep 30" } }] },
+      { message: "finish", finish: true },
+    ],
+    verify: [],
+  });
+  const cancel = await json(secondUrl, `/tenants/alice/runs/${controlled.body.runId}/cancel?project=${controlProject}`, {
+    method: "POST",
+    token: aliceAdmin,
+    expected: [202],
+    body: { reason: "phase 2 peer control", clientId: "desktop-b" },
+  });
+  assert.equal(cancel.body.cancelRequested, true);
+  await waitForRunStatus(secondUrl, aliceAdmin, "alice", controlProject, String(controlled.body.runId), "cancelled");
+  report.checks.crossServerRunControl = true;
 
   const first = await startRunWhenCapacityAvailable(firstUrl, {
     async: true,
@@ -150,6 +222,32 @@ async function waitForRunStatus(baseUrl, token, tenant, project, runId, expected
     await sleep(200);
   }
   throw new Error(`run ${runId} did not reach ${expected}: ${JSON.stringify(last)}`);
+}
+
+async function waitForSessionExit(baseUrl, token, project, sessionId) {
+  const path = `/tenants/alice/projects/${project}/sessions/${sessionId}/events`;
+  const deadline = Date.now() + 30_000;
+  let events = [];
+  while (Date.now() < deadline) {
+    const result = await json(baseUrl, path, { token, expected: [200, 404] });
+    if (result.status === 200) {
+      events = result.body;
+      if (events.some((event) => event.type === "exit")) return events;
+    }
+    await sleep(200);
+  }
+  throw new Error(`workspace session ${sessionId} did not exit: ${JSON.stringify(events)}`);
+}
+
+async function sse(baseUrl, path, token) {
+  const response = await fetch(`${baseUrl}${path}`, { headers: { authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  return text.split(/\r?\n\r?\n/).map((block) => {
+    const data = block.split(/\r?\n/).filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart()).join("\n");
+    return data ? JSON.parse(data) : undefined;
+  }).filter(Boolean);
 }
 
 async function json(baseUrl, path, options = {}) {
