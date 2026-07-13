@@ -4,9 +4,8 @@ import { Command } from "commander";
 import { basename, join } from "node:path";
 import { z } from "zod";
 
-import { createCommandAgent, createScriptedAgent, type HarnessAgent } from "../../harness/agents.js";
 import { makeRunId, runHarness } from "../../harness/loop.js";
-import { createOpenAiCompatibleAgent } from "../../harness/model-agent.js";
+import { buildAgent } from "../lib/agent-from-options.js";
 import { cfg } from "../lib/context.js";
 import { parseModelProtocolFlag } from "../lib/flags.js";
 import { runMetadata } from "./harness-run.js";
@@ -51,12 +50,16 @@ export function registerMcpCommand(program: Command): void {
           async (args) => {
             const cwd = args.cwd ?? opts.cwd;
             const model = args.model ?? opts.model;
-            let agent: HarnessAgent;
-            if (args.script) agent = await createScriptedAgent(args.script);
-            else if (args.agentCommand) agent = createCommandAgent(args.agentCommand, cwd);
-            else if (model)
-              agent = createOpenAiCompatibleAgent({ baseUrl: opts.modelBaseUrl, model, protocol, apiKey: process.env[opts.modelKeyEnv] });
-            else
+            const agent = await buildAgent({
+              script: args.script,
+              agentCommand: args.agentCommand,
+              model,
+              modelBaseUrl: opts.modelBaseUrl,
+              modelKeyEnv: opts.modelKeyEnv,
+              protocol,
+              cwd,
+            });
+            if (!agent)
               return {
                 isError: true,
                 content: [{ type: "text", text: "No agent: pass `model` (or start the server with --model), or a `script`/`agentCommand`." }],

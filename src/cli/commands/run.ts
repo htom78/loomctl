@@ -1,6 +1,5 @@
-import { createCommandAgent, createScriptedAgent } from "../../harness/agents.js";
 import { makeRunId, runHarness } from "../../harness/loop.js";
-import { createOpenAiCompatibleAgent } from "../../harness/model-agent.js";
+import { buildAgent } from "../lib/agent-from-options.js";
 import { cfg } from "../lib/context.js";
 import { formatEvent } from "../lib/event-format.js";
 import { collect, parseModelProtocolFlag } from "../lib/flags.js";
@@ -56,24 +55,23 @@ export function registerRunCommand(program: Command): void {
           watch: boolean;
         },
       ) => {
-        if (!opts.script && !opts.agentCommand && !opts.model) {
-          console.error("Either --model, --script, or --agent-command is required.");
-          process.exit(2);
-        }
         const modelProtocol = parseModelProtocolFlag(opts.modelProtocol, "--model-protocol");
         const runId = makeRunId();
         const project = basename(opts.cwd);
         const agentMode = opts.script ? "script" : opts.agentCommand ? "command" : "model";
-        const agent = opts.script
-          ? await createScriptedAgent(opts.script)
-          : opts.agentCommand
-            ? createCommandAgent(opts.agentCommand, opts.cwd)
-            : createOpenAiCompatibleAgent({
-                baseUrl: opts.modelBaseUrl,
-                model: opts.model as string,
-                protocol: modelProtocol,
-                apiKey: process.env[opts.modelKeyEnv],
-              });
+        const agent = await buildAgent({
+          script: opts.script,
+          agentCommand: opts.agentCommand,
+          model: opts.model,
+          modelBaseUrl: opts.modelBaseUrl,
+          modelKeyEnv: opts.modelKeyEnv,
+          protocol: modelProtocol,
+          cwd: opts.cwd,
+        });
+        if (!agent) {
+          console.error("Either --model, --script, or --agent-command is required.");
+          process.exit(2);
+        }
         const summary = await runHarness({
           runId,
           goal,
