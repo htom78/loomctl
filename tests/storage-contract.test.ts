@@ -75,15 +75,19 @@ test("file queue store supports claim, release, expiry recovery, and acknowledge
   await backend.queues.enqueue("runs:alice", "one", { goal: "first" });
   await backend.queues.enqueue("runs:alice", "two", { goal: "second" });
 
-  const first = await backend.queues.claim<{ goal: string }>("runs:alice", "one", "server-a", 25);
+  // Ownership semantics — a long TTL so the interleaved file I/O below can never
+  // expire the lease mid-test (a 25ms TTL flaked here under CI load).
+  const first = await backend.queues.claim<{ goal: string }>("runs:alice", "one", "server-a", 5_000);
   assert.equal(first?.id, "one");
-  assert.equal(await backend.queues.claim("runs:alice", "one", "server-b", 25), undefined);
+  assert.equal(await backend.queues.claim("runs:alice", "one", "server-b", 5_000), undefined);
   assert.equal(await backend.queues.release("runs:alice", "one", "server-b"), false);
   assert.equal(await backend.queues.acknowledge("runs:alice", "one", "server-a"), true);
 
+  // Expiry recovery — short TTL, then sleep well past it so timer jitter on CI
+  // still leaves a wide margin before the re-claim.
   const second = await backend.queues.claimNext<{ goal: string }>("runs:alice", "server-a", 25);
   assert.equal(second?.id, "two");
-  await new Promise((resolve) => setTimeout(resolve, 35));
+  await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal((await backend.queues.claimNext("runs:alice", "server-b", 25))?.id, "two");
   assert.equal(await backend.queues.acknowledge("runs:alice", "two", "server-b"), true);
   assert.deepEqual(await backend.queues.list("runs:alice"), []);
