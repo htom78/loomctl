@@ -30,11 +30,13 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^12.1.0",
     "execa": "^9.5.1",
     "jose": "^6.2.3",
     "pg": "^8.22.0",
-    "redis": "^6.1.0"
+    "redis": "^6.1.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.9.0",
