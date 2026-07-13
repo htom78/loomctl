@@ -11,8 +11,16 @@
     "loom": "dist/index.js",
     "loomd": "dist/loomd.js"
   },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
+    "prepack": "npm run build",
     "dev": "tsx src/index.ts",
     "pretest": "npm run build && npm run api:build",
     "test": "tsx --test --test-concurrency=1 tests/**/*.test.ts",
