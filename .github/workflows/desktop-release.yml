@@ -14,6 +14,11 @@ on:
         required: true
         default: false
         type: boolean
+      allow_unsigned_macos:
+        description: Beta only - publish macOS without Apple signing or notarization
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -36,12 +41,21 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      ALLOW_UNSIGNED_MACOS: ${{ inputs.allow_unsigned_macos }}
+      CHANNEL: ${{ inputs.channel }}
     steps:
       - name: Require updater and platform signing identities
         shell: bash
         run: |
           set -euo pipefail
-          for name in UPDATER_KEY UPDATER_PASSWORD APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
+          if test "$ALLOW_UNSIGNED_MACOS" = true; then
+            test "$CHANNEL" = beta || { echo "Unsigned macOS artifacts are limited to the beta channel"; exit 1; }
+          else
+            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              test -n "${!name}" || { echo "Missing required signing secret: $name"; exit 1; }
+            done
+          fi
+          for name in UPDATER_KEY UPDATER_PASSWORD WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
             test -n "${!name}" || { echo "Missing required signing secret: $name"; exit 1; }
           done
 
@@ -68,7 +82,9 @@ jobs:
             test "$draft" = true || { echo "Release $tag already exists and is immutable"; exit 1; }
             gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
           fi
-          args=(release create "$tag" --draft --generate-notes --target "$GITHUB_SHA" --title "Loom Desktop ${{ inputs.channel }} v${version}")
+          title="Loom Desktop ${{ inputs.channel }} v${version}"
+          if test "${{ inputs.allow_unsigned_macos }}" = true; then title="$title (unsigned macOS)"; fi
+          args=(release create "$tag" --draft --generate-notes --target "$GITHUB_SHA" --title "$title")
           if test "${{ inputs.channel }}" = beta; then args+=(--prerelease); fi
           gh "${args[@]}"
           release_id=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --paginate --jq ".[] | select(.tag_name == \"$tag\" and .draft) | .id" | sed -n '1p')
@@ -141,9 +157,11 @@ jobs:
           tauriScript: npm run tauri
           releaseId: ${{ needs.create-draft.outputs.release_id }}
           retryAttempts: 2
-          args: --target ${{ matrix.target }}
+          args: >-
+            --target ${{ matrix.target }}
+            ${{ matrix.platform == 'macos' && inputs.allow_unsigned_macos && '--no-sign' || '' }}
       - name: Verify macOS signature and notarization
-        if: matrix.platform == 'macos'
+        if: matrix.platform == 'macos' && inputs.allow_unsigned_macos == false
         shell: bash
         run: |
           set -euo pipefail
@@ -155,6 +173,19 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
           spctl --assess --type execute --verbose=2 "$app"
           xcrun stapler validate "$dmg"
+      - name: Verify unsigned macOS packages
+        if: matrix.platform == 'macos' && inputs.allow_unsigned_macos
+        shell: bash
+        run: |
+          set -euo pipefail
+          apps=(apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app)
+          dmgs=(apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
+          test "${#apps[@]}" -eq 1 && test -d "${apps[0]}"
+          test "${#dmgs[@]}" -eq 1 && test -s "${dmgs[0]}"
+          signature=$(codesign -dv --verbose=4 "${apps[0]}" 2>&1 || true)
+          case "$signature" in
+            *"Authority=Developer ID Application"*) echo "Unsigned beta unexpectedly used a Developer ID identity"; exit 1 ;;
+          esac
       - name: Verify Windows Authenticode signatures
         if: matrix.platform == 'windows'
         shell: pwsh
