@@ -25,7 +25,11 @@ Each agent stays in its lane. ~90% of changes then have zero overlap.
 | `apps/desktop/**` | Desktop agent |
 | `packages/loom-api/**` | Desktop agent (typed client) |
 | `src/harness/**`, `src/cli/**` | Kernel/backend agent |
-| `deploy/**`, `tests/**`, `scripts/**` | Kernel/backend agent |
+| `tests/**`, `scripts/**` | Kernel/backend agent |
+
+`deploy/**` is **shared**, not lane-owned — both agents touch it (the backend
+wires services; the desktop agent adds e2e/packaging and has edited
+`deploy/production`). It is governed by the pull-before-touch rule below.
 
 Do not edit the other lane's files. If a change needs both, coordinate on a PR
 rather than pushing across the boundary.
@@ -38,6 +42,7 @@ These are edited by both sides and must not be changed without a fresh
 - `package.json` (root — scripts and workspaces)
 - `package-lock.json`
 - `src/index.ts` (top-level command registration)
+- `deploy/**` (backend wiring + desktop e2e/packaging both land here)
 - `docs/adr/**`
 
 ### 3. No direct pushes to `main`
