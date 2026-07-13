@@ -7,6 +7,7 @@ import { registerHarnessCutoverReportCommand, registerHarnessPreflightCommands }
 import { registerHarnessRunCommand } from "./cli/commands/harness-run.js";
 import { registerMcpCommand } from "./cli/commands/mcp.js";
 import { registerRunCommand } from "./cli/commands/run.js";
+import { registerTuiCommand } from "./cli/commands/tui.js";
 import { registerHarnessRehearsalCommand, registerHarnessServeCommands, registerHarnessSmokeCommand } from "./cli/commands/harness-serve.js";
 import { registerHooksInstallCommand, registerWorkspaceProjectGoalCommands } from "./cli/commands/workspace-project.js";
 
@@ -24,6 +25,7 @@ program
 
 registerRunCommand(program);
 registerMcpCommand(program);
+registerTuiCommand(program);
 registerWorkspaceProjectGoalCommands(program);
 registerBrainCommands(program);
 registerHooksInstallCommand(program);
