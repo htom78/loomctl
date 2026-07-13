@@ -2,6 +2,7 @@ import { createCommandAgent, createScriptedAgent } from "../../harness/agents.js
 import { makeRunId, runHarness } from "../../harness/loop.js";
 import { createOpenAiCompatibleAgent } from "../../harness/model-agent.js";
 import { cfg } from "../lib/context.js";
+import { formatEvent } from "../lib/event-format.js";
 import { collect, parseModelProtocolFlag } from "../lib/flags.js";
 import { finalizeSummary, runMetadata } from "./harness-run.js";
 import { Command } from "commander";
@@ -33,6 +34,7 @@ export function registerRunCommand(program: Command): void {
     .option("--skill <name>", "skill active in this run; repeatable", collect, [] as string[])
     .option("--max-iterations <n>", "maximum loop iterations", "20")
     .option("--require-review", "hold successful verification at review_required until a human reviews it", false)
+    .option("--watch", "stream run events live to stderr as the loop runs", false)
     .action(
       async (
         goal: string,
@@ -51,6 +53,7 @@ export function registerRunCommand(program: Command): void {
           skill: string[];
           maxIterations: string;
           requireReview: boolean;
+          watch: boolean;
         },
       ) => {
         if (!opts.script && !opts.agentCommand && !opts.model) {
@@ -90,6 +93,8 @@ export function registerRunCommand(program: Command): void {
           }),
           reviewRequired: opts.requireReview,
           maxIterations: Number(opts.maxIterations),
+          // Live monitor: stream events to stderr, keeping stdout the clean JSON summary.
+          onEvent: opts.watch ? (event) => process.stderr.write(`${formatEvent(event)}\n`) : undefined,
           // ponytail: local executor only — a single-user run acts on the user's
           // own cwd. Add --executor docker when host isolation is actually asked for.
         });

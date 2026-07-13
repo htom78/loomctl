@@ -33,6 +33,7 @@ export interface RunHarnessOptions {
   resume?: boolean;
   startedAt?: string;
   stateBackend?: PlatformStateBackend;
+  onEvent?: (event: HarnessEvent) => void;
 }
 
 export interface RunRequester {
@@ -60,13 +61,26 @@ export async function runHarness(options: RunHarnessOptions): Promise<RunHarness
   const runId = options.runId ?? makeRunId();
   const runRoot = options.runRoot ?? join(options.cwd, ".loom", "runs");
   const startedAt = options.startedAt ?? new Date().toISOString();
-  const store = await createRunStore({
+  const baseStore = await createRunStore({
     rootDir: runRoot,
     runId,
     goal: options.goal,
     eventStore: options.stateBackend?.events,
     documentStore: options.stateBackend?.documents,
   });
+  // Fire onEvent for every appended event (live monitors, --watch). Resume replay
+  // reads events without appending, so it is not double-reported here.
+  const onEvent = options.onEvent;
+  const store: typeof baseStore = onEvent
+    ? {
+        ...baseStore,
+        async append<T>(type: Parameters<typeof baseStore.append>[0], data: T) {
+          const event = await baseStore.append(type, data);
+          onEvent(event);
+          return event;
+        },
+      }
+    : baseStore;
   const executor = options.executor ?? createLocalExecutor({ cwd: options.cwd });
   const allowedTools = effectiveAllowedTools(options.allowedTools);
   const runExecutionEnv = {
