@@ -19,6 +19,11 @@ on:
         required: true
         default: false
         type: boolean
+      allow_unsigned_windows:
+        description: Beta only - publish Windows without an Authenticode certificate
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -42,6 +47,7 @@ jobs:
       WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
       ALLOW_UNSIGNED_MACOS: ${{ inputs.allow_unsigned_macos }}
+      ALLOW_UNSIGNED_WINDOWS: ${{ inputs.allow_unsigned_windows }}
       CHANNEL: ${{ inputs.channel }}
     steps:
       - name: Require updater and platform signing identities
@@ -55,7 +61,14 @@ jobs:
               test -n "${!name}" || { echo "Missing required signing secret: $name"; exit 1; }
             done
           fi
-          for name in UPDATER_KEY UPDATER_PASSWORD WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
+          if test "$ALLOW_UNSIGNED_WINDOWS" = true; then
+            test "$CHANNEL" = beta || { echo "Unsigned Windows artifacts are limited to the beta channel"; exit 1; }
+          else
+            for name in WINDOWS_CERTIFICATE WINDOWS_CERTIFICATE_PASSWORD; do
+              test -n "${!name}" || { echo "Missing required signing secret: $name"; exit 1; }
+            done
+          fi
+          for name in UPDATER_KEY UPDATER_PASSWORD; do
             test -n "${!name}" || { echo "Missing required signing secret: $name"; exit 1; }
           done
 
@@ -84,6 +97,7 @@ jobs:
           fi
           title="Loom Desktop ${{ inputs.channel }} v${version}"
           if test "${{ inputs.allow_unsigned_macos }}" = true; then title="$title (unsigned macOS)"; fi
+          if test "${{ inputs.allow_unsigned_windows }}" = true; then title="$title (unsigned Windows)"; fi
           args=(release create "$tag" --draft --generate-notes --target "$GITHUB_SHA" --title "$title")
           if test "${{ inputs.channel }}" = beta; then args+=(--prerelease); fi
           gh "${args[@]}"
@@ -134,7 +148,7 @@ jobs:
       - run: npm ci
       - run: npm run api:build
       - name: Import Windows signing certificate
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && inputs.allow_unsigned_windows == false
         shell: pwsh
         env:
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
@@ -187,7 +201,7 @@ jobs:
             *"Authority=Developer ID Application"*) echo "Unsigned beta unexpectedly used a Developer ID identity"; exit 1 ;;
           esac
       - name: Verify Windows Authenticode signatures
-        if: matrix.platform == 'windows'
+        if: matrix.platform == 'windows' && inputs.allow_unsigned_windows == false
         shell: pwsh
         run: |
           $installers = Get-ChildItem apps/desktop/src-tauri/target -Recurse -File | Where-Object { $_.Extension -in '.exe', '.msi' }
@@ -195,6 +209,16 @@ jobs:
           foreach ($installer in $installers) {
             $signature = Get-AuthenticodeSignature $installer.FullName
             if ($signature.Status -ne 'Valid') { throw "Invalid signature: $($installer.FullName) ($($signature.Status))" }
+          }
+      - name: Verify unsigned Windows installers exist
+        if: matrix.platform == 'windows' && inputs.allow_unsigned_windows
+        shell: pwsh
+        run: |
+          $installers = Get-ChildItem apps/desktop/src-tauri/target -Recurse -File | Where-Object { $_.Extension -in '.exe', '.msi' }
+          if (-not $installers) { throw "No Windows installers were produced" }
+          foreach ($installer in $installers) {
+            $signature = Get-AuthenticodeSignature $installer.FullName
+            if ($signature.Status -eq 'Valid') { throw "Unsigned beta unexpectedly carries a valid Authenticode signature: $($installer.FullName)" }
           }
 
   linux:
